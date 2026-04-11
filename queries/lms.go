@@ -1,0 +1,653 @@
+package queries
+
+import (
+	"fmt"
+	"log"
+	"time"
+
+	"gopkg.in/mgo.v2/bson"
+
+	"github.com/josephalai/sentanyl/lms-service/models"
+	"github.com/josephalai/sentanyl/pkg/db"
+	sharedmodels "github.com/josephalai/sentanyl/pkg/models"
+)
+
+// ---------- CourseEnrollment CRUD ----------
+
+func CreateCourseEnrollment(enrollment *models.CourseEnrollment) (*models.CourseEnrollment, error) {
+	enrollment.SetCreated()
+	err := db.GetCollection(sharedmodels.CourseEnrollmentCollection).Insert(enrollment)
+	if err != nil {
+		log.Println("CreateCourseEnrollment error:", err)
+		return nil, err
+	}
+	return enrollment, nil
+}
+
+func GetCourseEnrollmentByPublicId(tenantID bson.ObjectId, publicId string) (*models.CourseEnrollment, error) {
+	result := models.CourseEnrollment{}
+	query := bson.M{
+		"tenant_id":             tenantID,
+		"public_id":             publicId,
+		"timestamps.deleted_at": nil,
+	}
+	err := db.GetCollection(sharedmodels.CourseEnrollmentCollection).Find(query).One(&result)
+	if err != nil {
+		log.Println("GetCourseEnrollmentByPublicId error:", err)
+		return nil, err
+	}
+	return &result, nil
+}
+
+func GetCourseEnrollmentByContactAndProduct(tenantID, contactID, productID bson.ObjectId) (*models.CourseEnrollment, error) {
+	result := models.CourseEnrollment{}
+	query := bson.M{
+		"tenant_id":             tenantID,
+		"contact_id":            contactID,
+		"product_id":            productID,
+		"timestamps.deleted_at": nil,
+	}
+	err := db.GetCollection(sharedmodels.CourseEnrollmentCollection).Find(query).One(&result)
+	if err != nil {
+		log.Println("GetCourseEnrollmentByContactAndProduct error:", err)
+		return nil, err
+	}
+	return &result, nil
+}
+
+func ListCourseEnrollments(tenantID bson.ObjectId, productID *bson.ObjectId, status string, skip, limit int) ([]*models.CourseEnrollment, error) {
+	result := []*models.CourseEnrollment{}
+	query := bson.M{
+		"tenant_id":             tenantID,
+		"timestamps.deleted_at": nil,
+	}
+	if productID != nil {
+		query["product_id"] = *productID
+	}
+	if status != "" {
+		query["status"] = status
+	}
+	q := db.GetCollection(sharedmodels.CourseEnrollmentCollection).Find(query).Sort("-enrolled_at")
+	if skip > 0 {
+		q = q.Skip(skip)
+	}
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+	err := q.All(&result)
+	if err != nil {
+		log.Println("ListCourseEnrollments error:", err)
+		return nil, err
+	}
+	return result, nil
+}
+
+func ListCourseEnrollmentsByContact(tenantID, contactID bson.ObjectId, status string, skip, limit int) ([]*models.CourseEnrollment, error) {
+	result := []*models.CourseEnrollment{}
+	query := bson.M{
+		"tenant_id":             tenantID,
+		"contact_id":            contactID,
+		"timestamps.deleted_at": nil,
+	}
+	if status != "" {
+		query["status"] = status
+	}
+	q := db.GetCollection(sharedmodels.CourseEnrollmentCollection).Find(query).Sort("-enrolled_at")
+	if skip > 0 {
+		q = q.Skip(skip)
+	}
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+	err := q.All(&result)
+	if err != nil {
+		log.Println("ListCourseEnrollmentsByContact error:", err)
+		return nil, err
+	}
+	return result, nil
+}
+
+func UpdateCourseEnrollment(tenantID bson.ObjectId, publicId string, update bson.M) (*models.CourseEnrollment, error) {
+	query := bson.M{
+		"tenant_id":             tenantID,
+		"public_id":             publicId,
+		"timestamps.deleted_at": nil,
+	}
+	update["timestamps.updated_at"] = time.Now()
+	err := db.GetCollection(sharedmodels.CourseEnrollmentCollection).Update(query, bson.M{"$set": update})
+	if err != nil {
+		log.Println("UpdateCourseEnrollment error:", err)
+		return nil, err
+	}
+	return GetCourseEnrollmentByPublicId(tenantID, publicId)
+}
+
+func RevokeCourseEnrollment(tenantID bson.ObjectId, publicId string) (*models.CourseEnrollment, error) {
+	now := time.Now()
+	return UpdateCourseEnrollment(tenantID, publicId, bson.M{
+		"status":     "revoked",
+		"revoked_at": now,
+	})
+}
+
+func UpdateLessonProgress(tenantID bson.ObjectId, enrollmentPublicId string, progress *models.LessonProgress) (*models.CourseEnrollment, error) {
+	enrollment, err := GetCourseEnrollmentByPublicId(tenantID, enrollmentPublicId)
+	if err != nil {
+		return nil, err
+	}
+
+	found := false
+	for i, p := range enrollment.Progress {
+		if p.LessonSlug == progress.LessonSlug && p.ModuleSlug == progress.ModuleSlug {
+			updateFields := bson.M{
+				fmt.Sprintf("progress.%d.watch_percent", i):     progress.WatchPercent,
+				fmt.Sprintf("progress.%d.last_position_sec", i): progress.LastPositionSec,
+				"timestamps.updated_at":                         time.Now(),
+			}
+			if progress.Completed {
+				updateFields[fmt.Sprintf("progress.%d.completed", i)] = true
+				if progress.CompletedAt != nil {
+					updateFields[fmt.Sprintf("progress.%d.completed_at", i)] = progress.CompletedAt
+				}
+			}
+			if progress.QuizPassed != nil {
+				updateFields[fmt.Sprintf("progress.%d.quiz_passed", i)] = *progress.QuizPassed
+			}
+			err = db.GetCollection(sharedmodels.CourseEnrollmentCollection).Update(
+				bson.M{"_id": enrollment.Id},
+				bson.M{"$set": updateFields},
+			)
+			if err != nil {
+				log.Println("UpdateLessonProgress update error:", err)
+			}
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		err = db.GetCollection(sharedmodels.CourseEnrollmentCollection).Update(
+			bson.M{"_id": enrollment.Id},
+			bson.M{
+				"$push": bson.M{"progress": progress},
+				"$set":  bson.M{"timestamps.updated_at": time.Now()},
+			},
+		)
+		if err != nil {
+			log.Println("UpdateLessonProgress push error:", err)
+		}
+	}
+
+	if err != nil {
+		return nil, err
+	}
+	return GetCourseEnrollmentByPublicId(tenantID, enrollmentPublicId)
+}
+
+func RecalculateOverallPercent(tenantID bson.ObjectId, enrollmentPublicId string, product *models.Product) (int, error) {
+	enrollment, err := GetCourseEnrollmentByPublicId(tenantID, enrollmentPublicId)
+	if err != nil {
+		return 0, err
+	}
+
+	totalRequired := 0
+	completed := 0
+	for _, mod := range product.CourseModules {
+		hasQuiz := mod.QuizSlug != ""
+		for _, lesson := range mod.Lessons {
+			if lesson.IsDraft {
+				continue
+			}
+			totalRequired++
+			for _, p := range enrollment.Progress {
+				if p.LessonSlug == lesson.Slug && p.ModuleSlug == mod.Slug {
+					if p.Completed {
+						if hasQuiz {
+							if p.QuizPassed != nil && *p.QuizPassed {
+								completed++
+							}
+						} else {
+							completed++
+						}
+					}
+					break
+				}
+			}
+		}
+	}
+
+	percent := 0
+	if totalRequired > 0 {
+		percent = (completed * 100) / totalRequired
+	}
+
+	now := time.Now()
+	err = db.GetCollection(sharedmodels.CourseEnrollmentCollection).Update(
+		bson.M{"_id": enrollment.Id},
+		bson.M{"$set": bson.M{
+			"overall_percent":       percent,
+			"timestamps.updated_at": now,
+		}},
+	)
+	if err != nil {
+		log.Println("RecalculateOverallPercent error:", err)
+		return 0, err
+	}
+	return percent, nil
+}
+
+func CountCourseEnrollments(tenantID, productID bson.ObjectId, status string) (int, error) {
+	query := bson.M{
+		"tenant_id":             tenantID,
+		"product_id":            productID,
+		"timestamps.deleted_at": nil,
+	}
+	if status != "" {
+		query["status"] = status
+	}
+	n, err := db.GetCollection(sharedmodels.CourseEnrollmentCollection).Find(query).Count()
+	if err != nil {
+		log.Println("CountCourseEnrollments error:", err)
+	}
+	return n, err
+}
+
+// ---------- LessonCompletion ----------
+
+func CreateLessonCompletion(completion *models.LessonCompletion) (*models.LessonCompletion, error) {
+	err := db.GetCollection(sharedmodels.LessonCompletionCollection).Insert(completion)
+	if err != nil {
+		log.Println("CreateLessonCompletion error:", err)
+		return nil, err
+	}
+	return completion, nil
+}
+
+func ListLessonCompletions(tenantID, enrollmentID bson.ObjectId) ([]*models.LessonCompletion, error) {
+	result := []*models.LessonCompletion{}
+	err := db.GetCollection(sharedmodels.LessonCompletionCollection).Find(bson.M{
+		"tenant_id":     tenantID,
+		"enrollment_id": enrollmentID,
+	}).Sort("-completed_at").All(&result)
+	if err != nil {
+		log.Println("ListLessonCompletions error:", err)
+		return nil, err
+	}
+	return result, nil
+}
+
+func CountLessonCompletionsByEnrollment(tenantID, enrollmentID bson.ObjectId) (int, error) {
+	n, err := db.GetCollection(sharedmodels.LessonCompletionCollection).Find(bson.M{
+		"tenant_id":     tenantID,
+		"enrollment_id": enrollmentID,
+	}).Count()
+	if err != nil {
+		log.Println("CountLessonCompletionsByEnrollment error:", err)
+	}
+	return n, err
+}
+
+// ---------- Certificate CRUD ----------
+
+func CreateCertificate(cert *models.Certificate) (*models.Certificate, error) {
+	cert.SetCreated()
+	err := db.GetCollection(sharedmodels.CertificateCollection).Insert(cert)
+	if err != nil {
+		log.Println("CreateCertificate error:", err)
+		return nil, err
+	}
+	return cert, nil
+}
+
+func GetCertificateByPublicId(tenantID bson.ObjectId, publicId string) (*models.Certificate, error) {
+	result := models.Certificate{}
+	query := bson.M{
+		"tenant_id":             tenantID,
+		"public_id":             publicId,
+		"timestamps.deleted_at": nil,
+	}
+	err := db.GetCollection(sharedmodels.CertificateCollection).Find(query).One(&result)
+	if err != nil {
+		log.Println("GetCertificateByPublicId error:", err)
+		return nil, err
+	}
+	return &result, nil
+}
+
+func GetCertificateByEnrollment(tenantID, enrollmentID bson.ObjectId) (*models.Certificate, error) {
+	result := models.Certificate{}
+	query := bson.M{
+		"tenant_id":             tenantID,
+		"enrollment_id":         enrollmentID,
+		"timestamps.deleted_at": nil,
+	}
+	err := db.GetCollection(sharedmodels.CertificateCollection).Find(query).One(&result)
+	if err != nil {
+		log.Println("GetCertificateByEnrollment error:", err)
+		return nil, err
+	}
+	return &result, nil
+}
+
+func ListCertificates(tenantID bson.ObjectId, contactID *bson.ObjectId, skip, limit int) ([]*models.Certificate, error) {
+	result := []*models.Certificate{}
+	query := bson.M{
+		"tenant_id":             tenantID,
+		"timestamps.deleted_at": nil,
+	}
+	if contactID != nil {
+		query["contact_id"] = *contactID
+	}
+	q := db.GetCollection(sharedmodels.CertificateCollection).Find(query).Sort("-completed_at")
+	if skip > 0 {
+		q = q.Skip(skip)
+	}
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+	err := q.All(&result)
+	if err != nil {
+		log.Println("ListCertificates error:", err)
+		return nil, err
+	}
+	return result, nil
+}
+
+func UpdateCertificate(tenantID bson.ObjectId, publicId string, update bson.M) (*models.Certificate, error) {
+	query := bson.M{
+		"tenant_id":             tenantID,
+		"public_id":             publicId,
+		"timestamps.deleted_at": nil,
+	}
+	update["timestamps.updated_at"] = time.Now()
+	err := db.GetCollection(sharedmodels.CertificateCollection).Update(query, bson.M{"$set": update})
+	if err != nil {
+		log.Println("UpdateCertificate error:", err)
+		return nil, err
+	}
+	return GetCertificateByPublicId(tenantID, publicId)
+}
+
+func ListPendingCertificates(tenantID bson.ObjectId) ([]*models.Certificate, error) {
+	result := []*models.Certificate{}
+	err := db.GetCollection(sharedmodels.CertificateCollection).Find(bson.M{
+		"tenant_id":             tenantID,
+		"gen_status":            "pending",
+		"timestamps.deleted_at": nil,
+	}).Limit(5).All(&result)
+	if err != nil {
+		log.Println("ListPendingCertificates error:", err)
+		return nil, err
+	}
+	return result, nil
+}
+
+// ---------- LMS Quiz CRUD ----------
+
+func CreateLMSQuiz(quiz *models.LMSQuiz) (*models.LMSQuiz, error) {
+	quiz.SetCreated()
+	err := db.GetCollection(sharedmodels.LMSQuizCollection).Insert(quiz)
+	if err != nil {
+		log.Println("CreateLMSQuiz error:", err)
+		return nil, err
+	}
+	return quiz, nil
+}
+
+func GetLMSQuizByPublicId(tenantID bson.ObjectId, publicId string) (*models.LMSQuiz, error) {
+	result := models.LMSQuiz{}
+	query := bson.M{
+		"tenant_id":             tenantID,
+		"public_id":             publicId,
+		"timestamps.deleted_at": nil,
+	}
+	err := db.GetCollection(sharedmodels.LMSQuizCollection).Find(query).One(&result)
+	if err != nil {
+		log.Println("GetLMSQuizByPublicId error:", err)
+		return nil, err
+	}
+	return &result, nil
+}
+
+func GetLMSQuizByProductAndModule(tenantID, productID bson.ObjectId, moduleSlug string) (*models.LMSQuiz, error) {
+	result := models.LMSQuiz{}
+	query := bson.M{
+		"tenant_id":             tenantID,
+		"product_id":            productID,
+		"module_slug":           moduleSlug,
+		"timestamps.deleted_at": nil,
+	}
+	err := db.GetCollection(sharedmodels.LMSQuizCollection).Find(query).One(&result)
+	if err != nil {
+		log.Println("GetLMSQuizByProductAndModule error:", err)
+		return nil, err
+	}
+	return &result, nil
+}
+
+func ListLMSQuizzesByProduct(tenantID, productID bson.ObjectId) ([]*models.LMSQuiz, error) {
+	result := []*models.LMSQuiz{}
+	err := db.GetCollection(sharedmodels.LMSQuizCollection).Find(bson.M{
+		"tenant_id":             tenantID,
+		"product_id":            productID,
+		"timestamps.deleted_at": nil,
+	}).All(&result)
+	if err != nil {
+		log.Println("ListLMSQuizzesByProduct error:", err)
+		return nil, err
+	}
+	return result, nil
+}
+
+func UpdateLMSQuiz(tenantID bson.ObjectId, publicId string, update bson.M) (*models.LMSQuiz, error) {
+	query := bson.M{
+		"tenant_id":             tenantID,
+		"public_id":             publicId,
+		"timestamps.deleted_at": nil,
+	}
+	update["timestamps.updated_at"] = time.Now()
+	err := db.GetCollection(sharedmodels.LMSQuizCollection).Update(query, bson.M{"$set": update})
+	if err != nil {
+		log.Println("UpdateLMSQuiz error:", err)
+		return nil, err
+	}
+	return GetLMSQuizByPublicId(tenantID, publicId)
+}
+
+func DeleteLMSQuiz(tenantID bson.ObjectId, publicId string) (*models.LMSQuiz, error) {
+	quiz, err := GetLMSQuizByPublicId(tenantID, publicId)
+	if err != nil {
+		return nil, err
+	}
+	quiz.SetDeleted()
+	err = db.GetCollection(sharedmodels.LMSQuizCollection).Update(
+		bson.M{"_id": quiz.Id},
+		bson.M{"$set": bson.M{"timestamps.deleted_at": quiz.DeletedAt}},
+	)
+	if err != nil {
+		log.Println("DeleteLMSQuiz error:", err)
+		return nil, err
+	}
+	return quiz, nil
+}
+
+// ---------- QuizAttempt ----------
+
+func CreateQuizAttempt(attempt *models.QuizAttempt) (*models.QuizAttempt, error) {
+	err := db.GetCollection(sharedmodels.QuizAttemptCollection).Insert(attempt)
+	if err != nil {
+		log.Println("CreateQuizAttempt error:", err)
+		return nil, err
+	}
+	return attempt, nil
+}
+
+func ListQuizAttempts(tenantID, quizID, contactID bson.ObjectId) ([]*models.QuizAttempt, error) {
+	result := []*models.QuizAttempt{}
+	err := db.GetCollection(sharedmodels.QuizAttemptCollection).Find(bson.M{
+		"tenant_id":  tenantID,
+		"quiz_id":    quizID,
+		"contact_id": contactID,
+	}).Sort("-submitted_at").All(&result)
+	if err != nil {
+		log.Println("ListQuizAttempts error:", err)
+		return nil, err
+	}
+	return result, nil
+}
+
+func CountQuizAttempts(tenantID, quizID, contactID bson.ObjectId) (int, error) {
+	n, err := db.GetCollection(sharedmodels.QuizAttemptCollection).Find(bson.M{
+		"tenant_id":  tenantID,
+		"quiz_id":    quizID,
+		"contact_id": contactID,
+	}).Count()
+	if err != nil {
+		log.Println("CountQuizAttempts error:", err)
+	}
+	return n, err
+}
+
+func GetBestQuizAttempt(tenantID, quizID, contactID bson.ObjectId) (*models.QuizAttempt, error) {
+	result := models.QuizAttempt{}
+	err := db.GetCollection(sharedmodels.QuizAttemptCollection).Find(bson.M{
+		"tenant_id":  tenantID,
+		"quiz_id":    quizID,
+		"contact_id": contactID,
+	}).Sort("-score").One(&result)
+	if err != nil {
+		log.Println("GetBestQuizAttempt error:", err)
+		return nil, err
+	}
+	return &result, nil
+}
+
+// ---------- Course Product Helpers ----------
+
+func ListCourseProducts(tenantID bson.ObjectId, status string, skip, limit int) ([]*models.Product, error) {
+	result := []*models.Product{}
+	query := bson.M{
+		"tenant_id":             tenantID,
+		"product_type":          "course",
+		"timestamps.deleted_at": nil,
+	}
+	if status != "" {
+		query["status"] = status
+	}
+	q := db.GetCollection(sharedmodels.ProductCollection).Find(query).Sort("-timestamps.created_at")
+	if skip > 0 {
+		q = q.Skip(skip)
+	}
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+	err := q.All(&result)
+	if err != nil {
+		log.Println("ListCourseProducts error:", err)
+		return nil, err
+	}
+	return result, nil
+}
+
+func CountCourseProducts(tenantID bson.ObjectId, status string) (int, error) {
+	query := bson.M{
+		"tenant_id":             tenantID,
+		"product_type":          "course",
+		"timestamps.deleted_at": nil,
+	}
+	if status != "" {
+		query["status"] = status
+	}
+	n, err := db.GetCollection(sharedmodels.ProductCollection).Find(query).Count()
+	if err != nil {
+		log.Println("CountCourseProducts error:", err)
+	}
+	return n, err
+}
+
+func GetCourseProductByPublicId(tenantID bson.ObjectId, publicId string) (*models.Product, error) {
+	result := models.Product{}
+	query := bson.M{
+		"tenant_id":             tenantID,
+		"public_id":             publicId,
+		"product_type":          "course",
+		"timestamps.deleted_at": nil,
+	}
+	err := db.GetCollection(sharedmodels.ProductCollection).Find(query).One(&result)
+	if err != nil {
+		log.Println("GetCourseProductByPublicId error:", err)
+		return nil, err
+	}
+	return &result, nil
+}
+
+func IncrementEnrollmentCount(tenantID, productID bson.ObjectId) error {
+	err := db.GetCollection(sharedmodels.ProductCollection).Update(
+		bson.M{"_id": productID, "tenant_id": tenantID},
+		bson.M{"$inc": bson.M{"enrollment_count": 1}},
+	)
+	if err != nil {
+		log.Println("IncrementEnrollmentCount error:", err)
+	}
+	return err
+}
+
+func IncrementCompletionCount(tenantID, productID bson.ObjectId) error {
+	err := db.GetCollection(sharedmodels.ProductCollection).Update(
+		bson.M{"_id": productID, "tenant_id": tenantID},
+		bson.M{"$inc": bson.M{"completion_count": 1}},
+	)
+	if err != nil {
+		log.Println("IncrementCompletionCount error:", err)
+	}
+	return err
+}
+
+func InsertProduct(product models.Product) error {
+	err := db.GetCollection(sharedmodels.ProductCollection).Insert(product)
+	if err != nil {
+		log.Println("InsertProduct error:", err)
+	}
+	return err
+}
+
+func ListAllPendingCertificates() ([]*models.Certificate, error) {
+	result := []*models.Certificate{}
+	err := db.GetCollection(sharedmodels.CertificateCollection).Find(bson.M{
+		"gen_status":            "pending",
+		"timestamps.deleted_at": nil,
+	}).Limit(5).All(&result)
+	if err != nil {
+		log.Println("ListAllPendingCertificates error:", err)
+		return nil, err
+	}
+	return result, nil
+}
+
+func UpdateProductField(productID bson.ObjectId, field string, value interface{}) error {
+	err := db.GetCollection(sharedmodels.ProductCollection).UpdateId(productID, bson.M{
+		"$set": bson.M{
+			field:                   value,
+			"timestamps.updated_at": time.Now(),
+		},
+	})
+	if err != nil {
+		log.Println("UpdateProductField error:", err)
+	}
+	return err
+}
+
+func UpdateLessonContentField(productID bson.ObjectId, moduleIdx, lessonIdx int, fields bson.M) error {
+	setFields := bson.M{"timestamps.updated_at": time.Now()}
+	for k, v := range fields {
+		path := fmt.Sprintf("course_modules.%d.lessons.%d.%s", moduleIdx, lessonIdx, k)
+		setFields[path] = v
+	}
+	err := db.GetCollection(sharedmodels.ProductCollection).UpdateId(productID, bson.M{
+		"$set": setFields,
+	})
+	if err != nil {
+		log.Println("UpdateLessonContentField error:", err)
+	}
+	return err
+}

@@ -1,0 +1,1071 @@
+package routes
+
+import (
+	"log"
+	"net/http"
+	"strconv"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"gopkg.in/mgo.v2/bson"
+
+	"github.com/josephalai/sentanyl/lms-service/models"
+	"github.com/josephalai/sentanyl/lms-service/queries"
+	"github.com/josephalai/sentanyl/pkg/auth"
+	"github.com/josephalai/sentanyl/pkg/db"
+	sharedmodels "github.com/josephalai/sentanyl/pkg/models"
+	"github.com/josephalai/sentanyl/pkg/utils"
+)
+
+// RegisterLMSRoutes registers all LMS endpoints under the given router group.
+func RegisterLMSRoutes(tenant *gin.RouterGroup) {
+	lms := tenant.Group("/lms")
+	{
+		// Courses
+		lms.GET("/courses", handleListCourses)
+		lms.POST("/courses", handleCreateCourse)
+		lms.GET("/courses/:courseId", handleGetCourse)
+		lms.PUT("/courses/:courseId", handleUpdateCourse)
+		lms.DELETE("/courses/:courseId", handleDeleteCourse)
+
+		// Enrollments
+		lms.GET("/enrollments", handleListEnrollments)
+		lms.POST("/enrollments", handleCreateEnrollment)
+		lms.GET("/enrollments/:enrollmentId", handleGetEnrollment)
+		lms.POST("/enrollments/:enrollmentId/progress", handleUpdateLessonProgress)
+		lms.POST("/enrollments/:enrollmentId/revoke", handleRevokeEnrollment)
+
+		// Quizzes
+		lms.GET("/quizzes", handleListQuizzes)
+		lms.GET("/quizzes/:quizId", handleGetQuiz)
+		lms.POST("/quizzes/:quizId/attempt", handleSubmitQuizAttempt)
+		lms.GET("/quizzes/:quizId/attempts", handleListQuizAttempts)
+
+		// Certificates
+		lms.GET("/certificates", handleListLMSCertificates)
+		lms.GET("/certificates/:certId", handleGetLMSCertificate)
+		lms.POST("/certificates/:certId/regenerate", handleRegenerateCertificate)
+	}
+}
+
+// ---------- Course Handlers ----------
+
+func handleListCourses(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	status := c.DefaultQuery("status", "")
+	skip, _ := strconv.Atoi(c.DefaultQuery("skip", "0"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	if limit > 100 {
+		limit = 100
+	}
+
+	products, err := queries.ListCourseProducts(tenantID, status, skip, limit)
+	if err != nil {
+		log.Printf("[LMS] Error listing courses: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list courses"})
+		return
+	}
+
+	total, _ := queries.CountCourseProducts(tenantID, status)
+
+	type courseItem struct {
+		PublicId        string `json:"public_id"`
+		Title           string `json:"title"`
+		Description     string `json:"description"`
+		InstructorName  string `json:"instructor_name"`
+		Status          string `json:"status"`
+		TotalLessons    int    `json:"total_lessons"`
+		TotalModules    int    `json:"total_modules"`
+		EnrollmentCount int    `json:"enrollment_count"`
+		CompletionCount int    `json:"completion_count"`
+		Thumbnail       string `json:"thumbnail,omitempty"`
+		CreatedAt       string `json:"created_at"`
+	}
+
+	items := make([]courseItem, 0, len(products))
+	for _, p := range products {
+		created := ""
+		if p.CreatedAt != nil {
+			created = p.CreatedAt.Format(time.RFC3339)
+		}
+		items = append(items, courseItem{
+			PublicId:        p.PublicId,
+			Title:           p.Name,
+			Description:     p.Description,
+			InstructorName:  p.InstructorName,
+			Status:          p.Status,
+			TotalLessons:    p.TotalLessons,
+			TotalModules:    len(p.CourseModules),
+			EnrollmentCount: p.EnrollmentCount,
+			CompletionCount: p.CompletionCount,
+			Thumbnail:       p.ThumbnailURL,
+			CreatedAt:       created,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{"courses": items, "total": total})
+}
+
+func handleCreateCourse(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	var req struct {
+		Title          string `json:"title" binding:"required"`
+		Description    string `json:"description"`
+		InstructorName string `json:"instructor_name"`
+		Thumbnail      string `json:"thumbnail"`
+		Modules        []struct {
+			Slug    string `json:"slug" binding:"required"`
+			Title   string `json:"title" binding:"required"`
+			Order   int    `json:"order"`
+			Lessons []struct {
+				Slug          string `json:"slug" binding:"required"`
+				Title         string `json:"title" binding:"required"`
+				Order         int    `json:"order"`
+				VideoURL      string `json:"video_url"`
+				MediaPublicId string `json:"media_public_id"`
+				Duration      string `json:"duration"`
+				ContentHTML   string `json:"content_html"`
+				IsFree        bool   `json:"is_free"`
+				IsDraft       bool   `json:"is_draft"`
+				DripDays      int    `json:"drip_days"`
+			} `json:"lessons"`
+		} `json:"modules"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	product := &models.Product{
+		Id:             bson.NewObjectId(),
+		PublicId:       utils.GeneratePublicId(),
+		TenantID:       tenantID,
+		Name:           req.Title,
+		Description:    req.Description,
+		ProductType:    "course",
+		InstructorName: req.InstructorName,
+		ThumbnailURL:   req.Thumbnail,
+		Status:         "draft",
+	}
+
+	totalLessons := 0
+	for _, m := range req.Modules {
+		mod := &models.CourseModule{
+			Slug:  m.Slug,
+			Title: m.Title,
+			Order: m.Order,
+		}
+		for _, l := range m.Lessons {
+			lesson := &models.CourseLesson{
+				Slug:          l.Slug,
+				Title:         l.Title,
+				Order:         l.Order,
+				VideoURL:      l.VideoURL,
+				MediaPublicId: l.MediaPublicId,
+				Duration:      l.Duration,
+				ContentHTML:   l.ContentHTML,
+				IsFree:        l.IsFree,
+				IsDraft:       l.IsDraft,
+				DripDays:      l.DripDays,
+			}
+			mod.Lessons = append(mod.Lessons, lesson)
+			totalLessons++
+		}
+		product.CourseModules = append(product.CourseModules, mod)
+	}
+	product.TotalLessons = totalLessons
+
+	product.SetCreated()
+	if err := queries.InsertProduct(*product); err != nil {
+		log.Printf("[LMS] Error creating course: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create course"})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"public_id":       product.PublicId,
+		"title":           product.Name,
+		"status":          product.Status,
+		"total_lessons":   product.TotalLessons,
+		"total_modules":   len(product.CourseModules),
+		"instructor_name": product.InstructorName,
+	})
+}
+
+func handleGetCourse(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	courseId := c.Param("courseId")
+	product, err := queries.GetCourseProductByPublicId(tenantID, courseId)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "course not found"})
+		return
+	}
+
+	created := ""
+	if product.CreatedAt != nil {
+		created = product.CreatedAt.Format(time.RFC3339)
+	}
+	updated := ""
+	if product.UpdatedAt != nil {
+		updated = product.UpdatedAt.Format(time.RFC3339)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"public_id":          product.PublicId,
+		"title":              product.Name,
+		"description":        product.Description,
+		"instructor_name":    product.InstructorName,
+		"status":             product.Status,
+		"thumbnail":          product.ThumbnailURL,
+		"modules":            product.CourseModules,
+		"total_lessons":      product.TotalLessons,
+		"total_duration_sec": product.TotalDurationSec,
+		"enrollment_count":   product.EnrollmentCount,
+		"completion_count":   product.CompletionCount,
+		"created_at":         created,
+		"updated_at":         updated,
+	})
+}
+
+func handleUpdateCourse(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	courseId := c.Param("courseId")
+	product, err := queries.GetCourseProductByPublicId(tenantID, courseId)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "course not found"})
+		return
+	}
+
+	var req struct {
+		Title          *string `json:"title,omitempty"`
+		Description    *string `json:"description,omitempty"`
+		InstructorName *string `json:"instructor_name,omitempty"`
+		Thumbnail      *string `json:"thumbnail,omitempty"`
+		Status         *string `json:"status,omitempty"`
+		Modules        []struct {
+			Slug    string `json:"slug"`
+			Title   string `json:"title"`
+			Order   int    `json:"order"`
+			Lessons []struct {
+				Slug          string `json:"slug"`
+				Title         string `json:"title"`
+				Order         int    `json:"order"`
+				VideoURL      string `json:"video_url"`
+				MediaPublicId string `json:"media_public_id"`
+				Duration      string `json:"duration"`
+				ContentHTML   string `json:"content_html"`
+				IsFree        bool   `json:"is_free"`
+				IsDraft       bool   `json:"is_draft"`
+				DripDays      int    `json:"drip_days"`
+			} `json:"lessons"`
+		} `json:"modules,omitempty"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	update := bson.M{}
+	if req.Title != nil {
+		update["name"] = *req.Title
+	}
+	if req.Description != nil {
+		update["description"] = *req.Description
+	}
+	if req.InstructorName != nil {
+		update["instructor_name"] = *req.InstructorName
+	}
+	if req.Thumbnail != nil {
+		update["thumbnail_url"] = *req.Thumbnail
+	}
+	if req.Status != nil {
+		update["status"] = *req.Status
+	}
+
+	if req.Modules != nil {
+		var modules []*models.CourseModule
+		totalLessons := 0
+		for _, m := range req.Modules {
+			mod := &models.CourseModule{
+				Slug:  m.Slug,
+				Title: m.Title,
+				Order: m.Order,
+			}
+			for _, l := range m.Lessons {
+				lesson := &models.CourseLesson{
+					Slug:          l.Slug,
+					Title:         l.Title,
+					Order:         l.Order,
+					VideoURL:      l.VideoURL,
+					MediaPublicId: l.MediaPublicId,
+					Duration:      l.Duration,
+					ContentHTML:   l.ContentHTML,
+					IsFree:        l.IsFree,
+					IsDraft:       l.IsDraft,
+					DripDays:      l.DripDays,
+				}
+				mod.Lessons = append(mod.Lessons, lesson)
+				totalLessons++
+			}
+			modules = append(modules, mod)
+		}
+		update["course_modules"] = modules
+		update["total_lessons"] = totalLessons
+	}
+
+	now := time.Now()
+	update["timestamps.updated_at"] = now
+	err = db.GetCollection(sharedmodels.ProductCollection).Update(
+		bson.M{"_id": product.Id},
+		bson.M{"$set": update},
+	)
+	if err != nil {
+		log.Printf("[LMS] Error updating course: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update course"})
+		return
+	}
+
+	handleGetCourse(c)
+}
+
+func handleDeleteCourse(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	courseId := c.Param("courseId")
+	product, err := queries.GetCourseProductByPublicId(tenantID, courseId)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "course not found"})
+		return
+	}
+
+	now := time.Now()
+	db.GetCollection(sharedmodels.ProductCollection).Update(
+		bson.M{"_id": product.Id},
+		bson.M{"$set": bson.M{"timestamps.deleted_at": now}},
+	)
+
+	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
+}
+
+// ---------- Enrollment Handlers ----------
+
+func handleListEnrollments(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	skip, _ := strconv.Atoi(c.DefaultQuery("skip", "0"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	if limit > 100 {
+		limit = 100
+	}
+	status := c.DefaultQuery("status", "")
+
+	var productID *bson.ObjectId
+	if ppid := c.DefaultQuery("product_public_id", ""); ppid != "" {
+		product, err := queries.GetCourseProductByPublicId(tenantID, ppid)
+		if err == nil {
+			productID = &product.Id
+		}
+	}
+
+	var contactID *bson.ObjectId
+	if cid := c.DefaultQuery("contact_id", ""); cid != "" && bson.IsObjectIdHex(cid) {
+		oid := bson.ObjectIdHex(cid)
+		contactID = &oid
+	}
+
+	var enrollments []*models.CourseEnrollment
+	var err error
+
+	if contactID != nil {
+		enrollments, err = queries.ListCourseEnrollmentsByContact(tenantID, *contactID, status, skip, limit)
+	} else {
+		enrollments, err = queries.ListCourseEnrollments(tenantID, productID, status, skip, limit)
+	}
+
+	if err != nil {
+		log.Printf("[LMS] Error listing enrollments: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list enrollments"})
+		return
+	}
+
+	type enrollmentItem struct {
+		PublicId        string `json:"public_id"`
+		ContactID       string `json:"contact_id"`
+		ProductPublicId string `json:"product_public_id"`
+		CourseTitle      string `json:"course_title"`
+		Status          string `json:"status"`
+		OverallPercent  int    `json:"overall_percent"`
+		EnrolledAt      string `json:"enrolled_at"`
+		CompletedAt     string `json:"completed_at,omitempty"`
+	}
+
+	items := make([]enrollmentItem, 0, len(enrollments))
+	for _, e := range enrollments {
+		item := enrollmentItem{
+			PublicId:        e.PublicId,
+			ContactID:       e.ContactID.Hex(),
+			ProductPublicId: e.ProductPublicId,
+			Status:          e.Status,
+			OverallPercent:  e.OverallPercent,
+			EnrolledAt:      e.EnrolledAt.Format(time.RFC3339),
+		}
+		if e.CompletedAt != nil {
+			item.CompletedAt = e.CompletedAt.Format(time.RFC3339)
+		}
+		if product, err := queries.GetCourseProductByPublicId(tenantID, e.ProductPublicId); err == nil {
+			item.CourseTitle = product.Name
+		}
+		items = append(items, item)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"enrollments": items, "total": len(items)})
+}
+
+func handleCreateEnrollment(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	var req struct {
+		ContactID       string `json:"contact_id" binding:"required"`
+		ProductPublicId string `json:"product_public_id" binding:"required"`
+		EnrollmentBadge string `json:"enrollment_badge"`
+		ExpiresAt       string `json:"expires_at,omitempty"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if !bson.IsObjectIdHex(req.ContactID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid contact_id"})
+		return
+	}
+	contactID := bson.ObjectIdHex(req.ContactID)
+
+	product, err := queries.GetCourseProductByPublicId(tenantID, req.ProductPublicId)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "course not found"})
+		return
+	}
+
+	enrollment := &models.CourseEnrollment{
+		Id:              bson.NewObjectId(),
+		PublicId:        utils.GeneratePublicId(),
+		TenantID:        tenantID,
+		ContactID:       contactID,
+		ProductID:       product.Id,
+		ProductPublicId: product.PublicId,
+		EnrollmentBadge: req.EnrollmentBadge,
+		Status:          "active",
+		OverallPercent:  0,
+		EnrolledAt:      time.Now(),
+	}
+
+	if req.ExpiresAt != "" {
+		if t, err := time.Parse(time.RFC3339, req.ExpiresAt); err == nil {
+			enrollment.ExpiresAt = &t
+		}
+	}
+
+	enrollment, err = queries.CreateCourseEnrollment(enrollment)
+	if err != nil {
+		log.Printf("[LMS] Error creating enrollment: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create enrollment"})
+		return
+	}
+
+	queries.IncrementEnrollmentCount(tenantID, product.Id)
+
+	c.JSON(http.StatusCreated, gin.H{
+		"public_id":         enrollment.PublicId,
+		"contact_id":        enrollment.ContactID.Hex(),
+		"product_public_id": enrollment.ProductPublicId,
+		"status":            enrollment.Status,
+		"overall_percent":   enrollment.OverallPercent,
+		"enrolled_at":       enrollment.EnrolledAt.Format(time.RFC3339),
+	})
+}
+
+func handleGetEnrollment(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	enrollmentId := c.Param("enrollmentId")
+	enrollment, err := queries.GetCourseEnrollmentByPublicId(tenantID, enrollmentId)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "enrollment not found"})
+		return
+	}
+
+	type progressResp struct {
+		LessonSlug      string `json:"lesson_slug"`
+		ModuleSlug      string `json:"module_slug"`
+		WatchPercent    int    `json:"watch_percent"`
+		LastPositionSec int    `json:"last_position_sec"`
+		Completed       bool   `json:"completed"`
+		CompletedAt     string `json:"completed_at,omitempty"`
+		QuizPassed      *bool  `json:"quiz_passed,omitempty"`
+	}
+
+	progress := make([]progressResp, 0)
+	for _, p := range enrollment.Progress {
+		pr := progressResp{
+			LessonSlug:      p.LessonSlug,
+			ModuleSlug:      p.ModuleSlug,
+			WatchPercent:    p.WatchPercent,
+			LastPositionSec: p.LastPositionSec,
+			Completed:       p.Completed,
+			QuizPassed:      p.QuizPassed,
+		}
+		if p.CompletedAt != nil {
+			pr.CompletedAt = p.CompletedAt.Format(time.RFC3339)
+		}
+		progress = append(progress, pr)
+	}
+
+	courseTitle := ""
+	if product, err := queries.GetCourseProductByPublicId(tenantID, enrollment.ProductPublicId); err == nil {
+		courseTitle = product.Name
+	}
+
+	resp := gin.H{
+		"public_id":         enrollment.PublicId,
+		"contact_id":        enrollment.ContactID.Hex(),
+		"product_public_id": enrollment.ProductPublicId,
+		"course_title":      courseTitle,
+		"status":            enrollment.Status,
+		"overall_percent":   enrollment.OverallPercent,
+		"progress":          progress,
+		"enrolled_at":       enrollment.EnrolledAt.Format(time.RFC3339),
+	}
+	if enrollment.CompletedAt != nil {
+		resp["completed_at"] = enrollment.CompletedAt.Format(time.RFC3339)
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+func handleUpdateLessonProgress(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	enrollmentId := c.Param("enrollmentId")
+	enrollment, err := queries.GetCourseEnrollmentByPublicId(tenantID, enrollmentId)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "enrollment not found"})
+		return
+	}
+
+	if enrollment.Status != "active" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "enrollment is not active"})
+		return
+	}
+
+	var req struct {
+		LessonSlug      string `json:"lesson_slug" binding:"required"`
+		ModuleSlug      string `json:"module_slug" binding:"required"`
+		WatchPercent    int    `json:"watch_percent"`
+		LastPositionSec int    `json:"last_position_sec"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	product, err := queries.GetCourseProductByPublicId(tenantID, enrollment.ProductPublicId)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "course not found"})
+		return
+	}
+
+	validLesson := false
+	moduleHasQuiz := false
+	for _, mod := range product.CourseModules {
+		if mod.Slug == req.ModuleSlug {
+			if mod.QuizSlug != "" {
+				moduleHasQuiz = true
+			}
+			for _, lesson := range mod.Lessons {
+				if lesson.Slug == req.LessonSlug {
+					validLesson = true
+					break
+				}
+			}
+			break
+		}
+	}
+
+	if !validLesson {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid lesson_slug or module_slug"})
+		return
+	}
+
+	progress := &models.LessonProgress{
+		LessonSlug:      req.LessonSlug,
+		ModuleSlug:      req.ModuleSlug,
+		WatchPercent:    req.WatchPercent,
+		LastPositionSec: req.LastPositionSec,
+	}
+
+	if req.WatchPercent >= 90 {
+		if !moduleHasQuiz {
+			now := time.Now()
+			progress.Completed = true
+			progress.CompletedAt = &now
+		} else {
+			for _, p := range enrollment.Progress {
+				if p.LessonSlug == req.LessonSlug && p.ModuleSlug == req.ModuleSlug {
+					if p.QuizPassed != nil && *p.QuizPassed {
+						now := time.Now()
+						progress.Completed = true
+						progress.CompletedAt = &now
+					}
+					break
+				}
+			}
+		}
+	}
+
+	enrollment, err = queries.UpdateLessonProgress(tenantID, enrollmentId, progress)
+	if err != nil {
+		log.Printf("[LMS] Error updating progress: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update progress"})
+		return
+	}
+
+	overallPercent, err := queries.RecalculateOverallPercent(tenantID, enrollmentId, product)
+	if err != nil {
+		log.Printf("[LMS] Error recalculating percent: %v", err)
+	}
+
+	// Four-part completion cascade when overall_percent == 100
+	if overallPercent == 100 && enrollment.Status == "active" {
+		now := time.Now()
+
+		queries.UpdateCourseEnrollment(tenantID, enrollmentId, bson.M{
+			"status":       "completed",
+			"completed_at": now,
+		})
+
+		completion := &models.LessonCompletion{
+			Id:           bson.NewObjectId(),
+			TenantID:     tenantID,
+			ContactID:    enrollment.ContactID,
+			ProductID:    enrollment.ProductID,
+			EnrollmentID: enrollment.Id,
+			ModuleSlug:   req.ModuleSlug,
+			LessonSlug:   req.LessonSlug,
+			WatchPercent: req.WatchPercent,
+			CompletedAt:  now,
+		}
+		queries.CreateLessonCompletion(completion)
+
+		queries.IncrementCompletionCount(tenantID, enrollment.ProductID)
+
+		cert := &models.Certificate{
+			Id:              bson.NewObjectId(),
+			PublicId:        utils.GeneratePublicId(),
+			TenantID:        tenantID,
+			ContactID:       enrollment.ContactID,
+			ProductID:       enrollment.ProductID,
+			ProductPublicId: enrollment.ProductPublicId,
+			EnrollmentID:    enrollment.Id,
+			CourseTitle:     product.Name,
+			CompletedAt:     now,
+			Template:        "default",
+			GenStatus:       "pending",
+		}
+		queries.CreateCertificate(cert)
+
+		log.Printf("[LMS] Course completed: enrollment=%s, contact=%s, course=%s",
+			enrollment.PublicId, enrollment.ContactID.Hex(), product.Name)
+	}
+
+	handleGetEnrollment(c)
+}
+
+func handleRevokeEnrollment(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	enrollmentId := c.Param("enrollmentId")
+	enrollment, err := queries.RevokeCourseEnrollment(tenantID, enrollmentId)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to revoke enrollment"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"public_id": enrollment.PublicId,
+		"status":    enrollment.Status,
+	})
+}
+
+// ---------- Quiz Handlers ----------
+
+func handleListQuizzes(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	productPublicId := c.DefaultQuery("product_id", "")
+	if productPublicId == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "product_id query parameter required"})
+		return
+	}
+
+	product, err := queries.GetCourseProductByPublicId(tenantID, productPublicId)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "course not found"})
+		return
+	}
+
+	quizzes, err := queries.ListLMSQuizzesByProduct(tenantID, product.Id)
+	if err != nil {
+		log.Printf("[LMS] Error listing quizzes: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list quizzes"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"quizzes": quizzes})
+}
+
+func handleGetQuiz(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	quizId := c.Param("quizId")
+	quiz, err := queries.GetLMSQuizByPublicId(tenantID, quizId)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "quiz not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, quiz)
+}
+
+func handleSubmitQuizAttempt(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	quizId := c.Param("quizId")
+	quiz, err := queries.GetLMSQuizByPublicId(tenantID, quizId)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "quiz not found"})
+		return
+	}
+
+	var req struct {
+		ContactID    string `json:"contact_id" binding:"required"`
+		EnrollmentID string `json:"enrollment_id" binding:"required"`
+		Answers      []struct {
+			QuestionSlug string `json:"question_slug" binding:"required"`
+			AnswerIndex  *int   `json:"answer_index,omitempty"`
+			AnswerText   string `json:"answer_text,omitempty"`
+		} `json:"answers" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if !bson.IsObjectIdHex(req.ContactID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid contact_id"})
+		return
+	}
+	contactID := bson.ObjectIdHex(req.ContactID)
+
+	enrollment, err := queries.GetCourseEnrollmentByPublicId(tenantID, req.EnrollmentID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "enrollment not found"})
+		return
+	}
+	if enrollment.Status != "active" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "enrollment is not active"})
+		return
+	}
+
+	attemptCount, _ := queries.CountQuizAttempts(tenantID, quiz.Id, contactID)
+	if quiz.MaxAttempts > 0 && attemptCount >= quiz.MaxAttempts {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "max attempts reached"})
+		return
+	}
+
+	correctCount := 0
+	totalQuestions := len(quiz.Questions)
+	var attemptAnswers []*models.QuizAttemptAnswer
+
+	for _, ans := range req.Answers {
+		aa := &models.QuizAttemptAnswer{
+			QuestionSlug: ans.QuestionSlug,
+		}
+		if ans.AnswerIndex != nil {
+			aa.AnswerIndex = *ans.AnswerIndex
+		}
+		aa.AnswerText = ans.AnswerText
+
+		for _, q := range quiz.Questions {
+			if q.Slug == ans.QuestionSlug {
+				switch q.Type {
+				case "multiple_choice":
+					if ans.AnswerIndex != nil && *ans.AnswerIndex == q.CorrectAnswer {
+						aa.IsCorrect = true
+						correctCount++
+					}
+				case "short_answer":
+					if ans.AnswerText == q.CorrectText {
+						aa.IsCorrect = true
+						correctCount++
+					}
+				}
+				break
+			}
+		}
+		attemptAnswers = append(attemptAnswers, aa)
+	}
+
+	score := 0
+	if totalQuestions > 0 {
+		score = (correctCount * 100) / totalQuestions
+	}
+	passed := score >= quiz.PassThreshold
+
+	attempt := &models.QuizAttempt{
+		Id:            bson.NewObjectId(),
+		TenantID:      tenantID,
+		ContactID:     contactID,
+		QuizID:        quiz.Id,
+		EnrollmentID:  enrollment.Id,
+		Answers:       attemptAnswers,
+		Score:         score,
+		Passed:        passed,
+		AttemptNumber: attemptCount + 1,
+		SubmittedAt:   time.Now(),
+	}
+
+	queries.CreateQuizAttempt(attempt)
+
+	if passed {
+		for _, p := range enrollment.Progress {
+			if p.ModuleSlug == quiz.ModuleSlug {
+				trueVal := true
+				progressUpdate := &models.LessonProgress{
+					LessonSlug:      p.LessonSlug,
+					ModuleSlug:      p.ModuleSlug,
+					WatchPercent:    p.WatchPercent,
+					LastPositionSec: p.LastPositionSec,
+					Completed:       p.Completed,
+					CompletedAt:     p.CompletedAt,
+					QuizPassed:      &trueVal,
+				}
+				if p.WatchPercent >= 90 && !p.Completed {
+					now := time.Now()
+					progressUpdate.Completed = true
+					progressUpdate.CompletedAt = &now
+				}
+				queries.UpdateLessonProgress(tenantID, enrollment.PublicId, progressUpdate)
+			}
+		}
+	}
+
+	type answerResult struct {
+		QuestionSlug string `json:"question_slug"`
+		IsCorrect    bool   `json:"is_correct"`
+	}
+	results := make([]answerResult, 0, len(attemptAnswers))
+	for _, a := range attemptAnswers {
+		results = append(results, answerResult{
+			QuestionSlug: a.QuestionSlug,
+			IsCorrect:    a.IsCorrect,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"score":          score,
+		"passed":         passed,
+		"attempt_number": attempt.AttemptNumber,
+		"results":        results,
+	})
+}
+
+func handleListQuizAttempts(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	quizId := c.Param("quizId")
+	quiz, err := queries.GetLMSQuizByPublicId(tenantID, quizId)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "quiz not found"})
+		return
+	}
+
+	contactIdStr := c.DefaultQuery("contact_id", "")
+	if contactIdStr == "" || !bson.IsObjectIdHex(contactIdStr) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "contact_id query parameter required"})
+		return
+	}
+	contactID := bson.ObjectIdHex(contactIdStr)
+
+	attempts, err := queries.ListQuizAttempts(tenantID, quiz.Id, contactID)
+	if err != nil {
+		log.Printf("[LMS] Error listing quiz attempts: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list attempts"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"attempts": attempts})
+}
+
+// ---------- Certificate Handlers ----------
+
+func handleListLMSCertificates(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	skip, _ := strconv.Atoi(c.DefaultQuery("skip", "0"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	if limit > 100 {
+		limit = 100
+	}
+
+	var contactID *bson.ObjectId
+	if cid := c.DefaultQuery("contact_id", ""); cid != "" && bson.IsObjectIdHex(cid) {
+		oid := bson.ObjectIdHex(cid)
+		contactID = &oid
+	}
+
+	certs, err := queries.ListCertificates(tenantID, contactID, skip, limit)
+	if err != nil {
+		log.Printf("[LMS] Error listing certificates: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list certificates"})
+		return
+	}
+
+	type certItem struct {
+		PublicId        string `json:"public_id"`
+		ContactName     string `json:"contact_name"`
+		CourseTitle     string `json:"course_title"`
+		ProductPublicId string `json:"product_public_id"`
+		GenStatus       string `json:"gen_status"`
+		AssetURL        string `json:"asset_url,omitempty"`
+		CompletedAt     string `json:"completed_at"`
+		IssuedAt        string `json:"issued_at,omitempty"`
+	}
+
+	items := make([]certItem, 0, len(certs))
+	for _, cert := range certs {
+		item := certItem{
+			PublicId:        cert.PublicId,
+			ContactName:     cert.ContactName,
+			CourseTitle:     cert.CourseTitle,
+			ProductPublicId: cert.ProductPublicId,
+			GenStatus:       cert.GenStatus,
+			AssetURL:        cert.AssetURL,
+			CompletedAt:     cert.CompletedAt.Format(time.RFC3339),
+		}
+		if cert.IssuedAt != nil {
+			item.IssuedAt = cert.IssuedAt.Format(time.RFC3339)
+		}
+		items = append(items, item)
+	}
+
+	c.JSON(http.StatusOK, gin.H{"certificates": items, "total": len(items)})
+}
+
+func handleGetLMSCertificate(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	certId := c.Param("certId")
+	cert, err := queries.GetCertificateByPublicId(tenantID, certId)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "certificate not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, cert)
+}
+
+func handleRegenerateCertificate(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	certId := c.Param("certId")
+	_, err := queries.UpdateCertificate(tenantID, certId, bson.M{
+		"gen_status":    "pending",
+		"asset_id":      nil,
+		"asset_url":     "",
+		"gen_error_msg": "",
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to regenerate certificate"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "regeneration queued"})
+}
