@@ -7,16 +7,16 @@ import (
 
 	"gopkg.in/mgo.v2/bson"
 
-	"github.com/josephalai/sentanyl/lms-service/models"
+	
 	"github.com/josephalai/sentanyl/pkg/db"
-	sharedmodels "github.com/josephalai/sentanyl/pkg/models"
+	pkgmodels "github.com/josephalai/sentanyl/pkg/models"
 )
 
 // ---------- CourseEnrollment CRUD ----------
 
-func CreateCourseEnrollment(enrollment *models.CourseEnrollment) (*models.CourseEnrollment, error) {
+func CreateCourseEnrollment(enrollment *pkgmodels.CourseEnrollment) (*pkgmodels.CourseEnrollment, error) {
 	enrollment.SetCreated()
-	err := db.GetCollection(sharedmodels.CourseEnrollmentCollection).Insert(enrollment)
+	err := db.GetCollection(pkgmodels.CourseEnrollmentCollection).Insert(enrollment)
 	if err != nil {
 		log.Println("CreateCourseEnrollment error:", err)
 		return nil, err
@@ -24,14 +24,14 @@ func CreateCourseEnrollment(enrollment *models.CourseEnrollment) (*models.Course
 	return enrollment, nil
 }
 
-func GetCourseEnrollmentByPublicId(tenantID bson.ObjectId, publicId string) (*models.CourseEnrollment, error) {
-	result := models.CourseEnrollment{}
+func GetCourseEnrollmentByPublicId(tenantID bson.ObjectId, publicId string) (*pkgmodels.CourseEnrollment, error) {
+	result := pkgmodels.CourseEnrollment{}
 	query := bson.M{
 		"tenant_id":             tenantID,
 		"public_id":             publicId,
 		"timestamps.deleted_at": nil,
 	}
-	err := db.GetCollection(sharedmodels.CourseEnrollmentCollection).Find(query).One(&result)
+	err := db.GetCollection(pkgmodels.CourseEnrollmentCollection).Find(query).One(&result)
 	if err != nil {
 		log.Println("GetCourseEnrollmentByPublicId error:", err)
 		return nil, err
@@ -39,15 +39,15 @@ func GetCourseEnrollmentByPublicId(tenantID bson.ObjectId, publicId string) (*mo
 	return &result, nil
 }
 
-func GetCourseEnrollmentByContactAndProduct(tenantID, contactID, productID bson.ObjectId) (*models.CourseEnrollment, error) {
-	result := models.CourseEnrollment{}
+func GetCourseEnrollmentByContactAndProduct(tenantID, contactID, productID bson.ObjectId) (*pkgmodels.CourseEnrollment, error) {
+	result := pkgmodels.CourseEnrollment{}
 	query := bson.M{
 		"tenant_id":             tenantID,
 		"contact_id":            contactID,
 		"product_id":            productID,
 		"timestamps.deleted_at": nil,
 	}
-	err := db.GetCollection(sharedmodels.CourseEnrollmentCollection).Find(query).One(&result)
+	err := db.GetCollection(pkgmodels.CourseEnrollmentCollection).Find(query).One(&result)
 	if err != nil {
 		log.Println("GetCourseEnrollmentByContactAndProduct error:", err)
 		return nil, err
@@ -55,8 +55,8 @@ func GetCourseEnrollmentByContactAndProduct(tenantID, contactID, productID bson.
 	return &result, nil
 }
 
-func ListCourseEnrollments(tenantID bson.ObjectId, productID *bson.ObjectId, status string, skip, limit int) ([]*models.CourseEnrollment, error) {
-	result := []*models.CourseEnrollment{}
+func ListCourseEnrollments(tenantID bson.ObjectId, productID *bson.ObjectId, status string, skip, limit int) ([]*pkgmodels.CourseEnrollment, error) {
+	result := []*pkgmodels.CourseEnrollment{}
 	query := bson.M{
 		"tenant_id":             tenantID,
 		"timestamps.deleted_at": nil,
@@ -67,7 +67,7 @@ func ListCourseEnrollments(tenantID bson.ObjectId, productID *bson.ObjectId, sta
 	if status != "" {
 		query["status"] = status
 	}
-	q := db.GetCollection(sharedmodels.CourseEnrollmentCollection).Find(query).Sort("-enrolled_at")
+	q := db.GetCollection(pkgmodels.CourseEnrollmentCollection).Find(query).Sort("-enrolled_at")
 	if skip > 0 {
 		q = q.Skip(skip)
 	}
@@ -82,8 +82,8 @@ func ListCourseEnrollments(tenantID bson.ObjectId, productID *bson.ObjectId, sta
 	return result, nil
 }
 
-func ListCourseEnrollmentsByContact(tenantID, contactID bson.ObjectId, status string, skip, limit int) ([]*models.CourseEnrollment, error) {
-	result := []*models.CourseEnrollment{}
+func ListCourseEnrollmentsByContact(tenantID, contactID bson.ObjectId, status string, skip, limit int) ([]*pkgmodels.CourseEnrollment, error) {
+	result := []*pkgmodels.CourseEnrollment{}
 	query := bson.M{
 		"tenant_id":             tenantID,
 		"contact_id":            contactID,
@@ -92,7 +92,7 @@ func ListCourseEnrollmentsByContact(tenantID, contactID bson.ObjectId, status st
 	if status != "" {
 		query["status"] = status
 	}
-	q := db.GetCollection(sharedmodels.CourseEnrollmentCollection).Find(query).Sort("-enrolled_at")
+	q := db.GetCollection(pkgmodels.CourseEnrollmentCollection).Find(query).Sort("-enrolled_at")
 	if skip > 0 {
 		q = q.Skip(skip)
 	}
@@ -107,14 +107,14 @@ func ListCourseEnrollmentsByContact(tenantID, contactID bson.ObjectId, status st
 	return result, nil
 }
 
-func UpdateCourseEnrollment(tenantID bson.ObjectId, publicId string, update bson.M) (*models.CourseEnrollment, error) {
+func UpdateCourseEnrollment(tenantID bson.ObjectId, publicId string, update bson.M) (*pkgmodels.CourseEnrollment, error) {
 	query := bson.M{
 		"tenant_id":             tenantID,
 		"public_id":             publicId,
 		"timestamps.deleted_at": nil,
 	}
 	update["timestamps.updated_at"] = time.Now()
-	err := db.GetCollection(sharedmodels.CourseEnrollmentCollection).Update(query, bson.M{"$set": update})
+	err := db.GetCollection(pkgmodels.CourseEnrollmentCollection).Update(query, bson.M{"$set": update})
 	if err != nil {
 		log.Println("UpdateCourseEnrollment error:", err)
 		return nil, err
@@ -122,7 +122,7 @@ func UpdateCourseEnrollment(tenantID bson.ObjectId, publicId string, update bson
 	return GetCourseEnrollmentByPublicId(tenantID, publicId)
 }
 
-func RevokeCourseEnrollment(tenantID bson.ObjectId, publicId string) (*models.CourseEnrollment, error) {
+func RevokeCourseEnrollment(tenantID bson.ObjectId, publicId string) (*pkgmodels.CourseEnrollment, error) {
 	now := time.Now()
 	return UpdateCourseEnrollment(tenantID, publicId, bson.M{
 		"status":     "revoked",
@@ -130,7 +130,7 @@ func RevokeCourseEnrollment(tenantID bson.ObjectId, publicId string) (*models.Co
 	})
 }
 
-func UpdateLessonProgress(tenantID bson.ObjectId, enrollmentPublicId string, progress *models.LessonProgress) (*models.CourseEnrollment, error) {
+func UpdateLessonProgress(tenantID bson.ObjectId, enrollmentPublicId string, progress *pkgmodels.LessonProgress) (*pkgmodels.CourseEnrollment, error) {
 	enrollment, err := GetCourseEnrollmentByPublicId(tenantID, enrollmentPublicId)
 	if err != nil {
 		return nil, err
@@ -153,7 +153,7 @@ func UpdateLessonProgress(tenantID bson.ObjectId, enrollmentPublicId string, pro
 			if progress.QuizPassed != nil {
 				updateFields[fmt.Sprintf("progress.%d.quiz_passed", i)] = *progress.QuizPassed
 			}
-			err = db.GetCollection(sharedmodels.CourseEnrollmentCollection).Update(
+			err = db.GetCollection(pkgmodels.CourseEnrollmentCollection).Update(
 				bson.M{"_id": enrollment.Id},
 				bson.M{"$set": updateFields},
 			)
@@ -166,7 +166,7 @@ func UpdateLessonProgress(tenantID bson.ObjectId, enrollmentPublicId string, pro
 	}
 
 	if !found {
-		err = db.GetCollection(sharedmodels.CourseEnrollmentCollection).Update(
+		err = db.GetCollection(pkgmodels.CourseEnrollmentCollection).Update(
 			bson.M{"_id": enrollment.Id},
 			bson.M{
 				"$push": bson.M{"progress": progress},
@@ -184,7 +184,7 @@ func UpdateLessonProgress(tenantID bson.ObjectId, enrollmentPublicId string, pro
 	return GetCourseEnrollmentByPublicId(tenantID, enrollmentPublicId)
 }
 
-func RecalculateOverallPercent(tenantID bson.ObjectId, enrollmentPublicId string, product *models.Product) (int, error) {
+func RecalculateOverallPercent(tenantID bson.ObjectId, enrollmentPublicId string, product *pkgmodels.Product) (int, error) {
 	enrollment, err := GetCourseEnrollmentByPublicId(tenantID, enrollmentPublicId)
 	if err != nil {
 		return 0, err
@@ -222,7 +222,7 @@ func RecalculateOverallPercent(tenantID bson.ObjectId, enrollmentPublicId string
 	}
 
 	now := time.Now()
-	err = db.GetCollection(sharedmodels.CourseEnrollmentCollection).Update(
+	err = db.GetCollection(pkgmodels.CourseEnrollmentCollection).Update(
 		bson.M{"_id": enrollment.Id},
 		bson.M{"$set": bson.M{
 			"overall_percent":       percent,
@@ -245,7 +245,7 @@ func CountCourseEnrollments(tenantID, productID bson.ObjectId, status string) (i
 	if status != "" {
 		query["status"] = status
 	}
-	n, err := db.GetCollection(sharedmodels.CourseEnrollmentCollection).Find(query).Count()
+	n, err := db.GetCollection(pkgmodels.CourseEnrollmentCollection).Find(query).Count()
 	if err != nil {
 		log.Println("CountCourseEnrollments error:", err)
 	}
@@ -254,8 +254,8 @@ func CountCourseEnrollments(tenantID, productID bson.ObjectId, status string) (i
 
 // ---------- LessonCompletion ----------
 
-func CreateLessonCompletion(completion *models.LessonCompletion) (*models.LessonCompletion, error) {
-	err := db.GetCollection(sharedmodels.LessonCompletionCollection).Insert(completion)
+func CreateLessonCompletion(completion *pkgmodels.LessonCompletion) (*pkgmodels.LessonCompletion, error) {
+	err := db.GetCollection(pkgmodels.LessonCompletionCollection).Insert(completion)
 	if err != nil {
 		log.Println("CreateLessonCompletion error:", err)
 		return nil, err
@@ -263,9 +263,9 @@ func CreateLessonCompletion(completion *models.LessonCompletion) (*models.Lesson
 	return completion, nil
 }
 
-func ListLessonCompletions(tenantID, enrollmentID bson.ObjectId) ([]*models.LessonCompletion, error) {
-	result := []*models.LessonCompletion{}
-	err := db.GetCollection(sharedmodels.LessonCompletionCollection).Find(bson.M{
+func ListLessonCompletions(tenantID, enrollmentID bson.ObjectId) ([]*pkgmodels.LessonCompletion, error) {
+	result := []*pkgmodels.LessonCompletion{}
+	err := db.GetCollection(pkgmodels.LessonCompletionCollection).Find(bson.M{
 		"tenant_id":     tenantID,
 		"enrollment_id": enrollmentID,
 	}).Sort("-completed_at").All(&result)
@@ -277,7 +277,7 @@ func ListLessonCompletions(tenantID, enrollmentID bson.ObjectId) ([]*models.Less
 }
 
 func CountLessonCompletionsByEnrollment(tenantID, enrollmentID bson.ObjectId) (int, error) {
-	n, err := db.GetCollection(sharedmodels.LessonCompletionCollection).Find(bson.M{
+	n, err := db.GetCollection(pkgmodels.LessonCompletionCollection).Find(bson.M{
 		"tenant_id":     tenantID,
 		"enrollment_id": enrollmentID,
 	}).Count()
@@ -289,9 +289,9 @@ func CountLessonCompletionsByEnrollment(tenantID, enrollmentID bson.ObjectId) (i
 
 // ---------- Certificate CRUD ----------
 
-func CreateCertificate(cert *models.Certificate) (*models.Certificate, error) {
+func CreateCertificate(cert *pkgmodels.Certificate) (*pkgmodels.Certificate, error) {
 	cert.SetCreated()
-	err := db.GetCollection(sharedmodels.CertificateCollection).Insert(cert)
+	err := db.GetCollection(pkgmodels.CertificateCollection).Insert(cert)
 	if err != nil {
 		log.Println("CreateCertificate error:", err)
 		return nil, err
@@ -299,14 +299,14 @@ func CreateCertificate(cert *models.Certificate) (*models.Certificate, error) {
 	return cert, nil
 }
 
-func GetCertificateByPublicId(tenantID bson.ObjectId, publicId string) (*models.Certificate, error) {
-	result := models.Certificate{}
+func GetCertificateByPublicId(tenantID bson.ObjectId, publicId string) (*pkgmodels.Certificate, error) {
+	result := pkgmodels.Certificate{}
 	query := bson.M{
 		"tenant_id":             tenantID,
 		"public_id":             publicId,
 		"timestamps.deleted_at": nil,
 	}
-	err := db.GetCollection(sharedmodels.CertificateCollection).Find(query).One(&result)
+	err := db.GetCollection(pkgmodels.CertificateCollection).Find(query).One(&result)
 	if err != nil {
 		log.Println("GetCertificateByPublicId error:", err)
 		return nil, err
@@ -314,14 +314,14 @@ func GetCertificateByPublicId(tenantID bson.ObjectId, publicId string) (*models.
 	return &result, nil
 }
 
-func GetCertificateByEnrollment(tenantID, enrollmentID bson.ObjectId) (*models.Certificate, error) {
-	result := models.Certificate{}
+func GetCertificateByEnrollment(tenantID, enrollmentID bson.ObjectId) (*pkgmodels.Certificate, error) {
+	result := pkgmodels.Certificate{}
 	query := bson.M{
 		"tenant_id":             tenantID,
 		"enrollment_id":         enrollmentID,
 		"timestamps.deleted_at": nil,
 	}
-	err := db.GetCollection(sharedmodels.CertificateCollection).Find(query).One(&result)
+	err := db.GetCollection(pkgmodels.CertificateCollection).Find(query).One(&result)
 	if err != nil {
 		log.Println("GetCertificateByEnrollment error:", err)
 		return nil, err
@@ -329,8 +329,8 @@ func GetCertificateByEnrollment(tenantID, enrollmentID bson.ObjectId) (*models.C
 	return &result, nil
 }
 
-func ListCertificates(tenantID bson.ObjectId, contactID *bson.ObjectId, skip, limit int) ([]*models.Certificate, error) {
-	result := []*models.Certificate{}
+func ListCertificates(tenantID bson.ObjectId, contactID *bson.ObjectId, skip, limit int) ([]*pkgmodels.Certificate, error) {
+	result := []*pkgmodels.Certificate{}
 	query := bson.M{
 		"tenant_id":             tenantID,
 		"timestamps.deleted_at": nil,
@@ -338,7 +338,7 @@ func ListCertificates(tenantID bson.ObjectId, contactID *bson.ObjectId, skip, li
 	if contactID != nil {
 		query["contact_id"] = *contactID
 	}
-	q := db.GetCollection(sharedmodels.CertificateCollection).Find(query).Sort("-completed_at")
+	q := db.GetCollection(pkgmodels.CertificateCollection).Find(query).Sort("-completed_at")
 	if skip > 0 {
 		q = q.Skip(skip)
 	}
@@ -353,14 +353,14 @@ func ListCertificates(tenantID bson.ObjectId, contactID *bson.ObjectId, skip, li
 	return result, nil
 }
 
-func UpdateCertificate(tenantID bson.ObjectId, publicId string, update bson.M) (*models.Certificate, error) {
+func UpdateCertificate(tenantID bson.ObjectId, publicId string, update bson.M) (*pkgmodels.Certificate, error) {
 	query := bson.M{
 		"tenant_id":             tenantID,
 		"public_id":             publicId,
 		"timestamps.deleted_at": nil,
 	}
 	update["timestamps.updated_at"] = time.Now()
-	err := db.GetCollection(sharedmodels.CertificateCollection).Update(query, bson.M{"$set": update})
+	err := db.GetCollection(pkgmodels.CertificateCollection).Update(query, bson.M{"$set": update})
 	if err != nil {
 		log.Println("UpdateCertificate error:", err)
 		return nil, err
@@ -368,9 +368,9 @@ func UpdateCertificate(tenantID bson.ObjectId, publicId string, update bson.M) (
 	return GetCertificateByPublicId(tenantID, publicId)
 }
 
-func ListPendingCertificates(tenantID bson.ObjectId) ([]*models.Certificate, error) {
-	result := []*models.Certificate{}
-	err := db.GetCollection(sharedmodels.CertificateCollection).Find(bson.M{
+func ListPendingCertificates(tenantID bson.ObjectId) ([]*pkgmodels.Certificate, error) {
+	result := []*pkgmodels.Certificate{}
+	err := db.GetCollection(pkgmodels.CertificateCollection).Find(bson.M{
 		"tenant_id":             tenantID,
 		"gen_status":            "pending",
 		"timestamps.deleted_at": nil,
@@ -384,9 +384,9 @@ func ListPendingCertificates(tenantID bson.ObjectId) ([]*models.Certificate, err
 
 // ---------- LMS Quiz CRUD ----------
 
-func CreateLMSQuiz(quiz *models.LMSQuiz) (*models.LMSQuiz, error) {
+func CreateLMSQuiz(quiz *pkgmodels.LMSQuiz) (*pkgmodels.LMSQuiz, error) {
 	quiz.SetCreated()
-	err := db.GetCollection(sharedmodels.LMSQuizCollection).Insert(quiz)
+	err := db.GetCollection(pkgmodels.LMSQuizCollection).Insert(quiz)
 	if err != nil {
 		log.Println("CreateLMSQuiz error:", err)
 		return nil, err
@@ -394,14 +394,14 @@ func CreateLMSQuiz(quiz *models.LMSQuiz) (*models.LMSQuiz, error) {
 	return quiz, nil
 }
 
-func GetLMSQuizByPublicId(tenantID bson.ObjectId, publicId string) (*models.LMSQuiz, error) {
-	result := models.LMSQuiz{}
+func GetLMSQuizByPublicId(tenantID bson.ObjectId, publicId string) (*pkgmodels.LMSQuiz, error) {
+	result := pkgmodels.LMSQuiz{}
 	query := bson.M{
 		"tenant_id":             tenantID,
 		"public_id":             publicId,
 		"timestamps.deleted_at": nil,
 	}
-	err := db.GetCollection(sharedmodels.LMSQuizCollection).Find(query).One(&result)
+	err := db.GetCollection(pkgmodels.LMSQuizCollection).Find(query).One(&result)
 	if err != nil {
 		log.Println("GetLMSQuizByPublicId error:", err)
 		return nil, err
@@ -409,15 +409,15 @@ func GetLMSQuizByPublicId(tenantID bson.ObjectId, publicId string) (*models.LMSQ
 	return &result, nil
 }
 
-func GetLMSQuizByProductAndModule(tenantID, productID bson.ObjectId, moduleSlug string) (*models.LMSQuiz, error) {
-	result := models.LMSQuiz{}
+func GetLMSQuizByProductAndModule(tenantID, productID bson.ObjectId, moduleSlug string) (*pkgmodels.LMSQuiz, error) {
+	result := pkgmodels.LMSQuiz{}
 	query := bson.M{
 		"tenant_id":             tenantID,
 		"product_id":            productID,
 		"module_slug":           moduleSlug,
 		"timestamps.deleted_at": nil,
 	}
-	err := db.GetCollection(sharedmodels.LMSQuizCollection).Find(query).One(&result)
+	err := db.GetCollection(pkgmodels.LMSQuizCollection).Find(query).One(&result)
 	if err != nil {
 		log.Println("GetLMSQuizByProductAndModule error:", err)
 		return nil, err
@@ -425,9 +425,9 @@ func GetLMSQuizByProductAndModule(tenantID, productID bson.ObjectId, moduleSlug 
 	return &result, nil
 }
 
-func ListLMSQuizzesByProduct(tenantID, productID bson.ObjectId) ([]*models.LMSQuiz, error) {
-	result := []*models.LMSQuiz{}
-	err := db.GetCollection(sharedmodels.LMSQuizCollection).Find(bson.M{
+func ListLMSQuizzesByProduct(tenantID, productID bson.ObjectId) ([]*pkgmodels.LMSQuiz, error) {
+	result := []*pkgmodels.LMSQuiz{}
+	err := db.GetCollection(pkgmodels.LMSQuizCollection).Find(bson.M{
 		"tenant_id":             tenantID,
 		"product_id":            productID,
 		"timestamps.deleted_at": nil,
@@ -439,14 +439,14 @@ func ListLMSQuizzesByProduct(tenantID, productID bson.ObjectId) ([]*models.LMSQu
 	return result, nil
 }
 
-func UpdateLMSQuiz(tenantID bson.ObjectId, publicId string, update bson.M) (*models.LMSQuiz, error) {
+func UpdateLMSQuiz(tenantID bson.ObjectId, publicId string, update bson.M) (*pkgmodels.LMSQuiz, error) {
 	query := bson.M{
 		"tenant_id":             tenantID,
 		"public_id":             publicId,
 		"timestamps.deleted_at": nil,
 	}
 	update["timestamps.updated_at"] = time.Now()
-	err := db.GetCollection(sharedmodels.LMSQuizCollection).Update(query, bson.M{"$set": update})
+	err := db.GetCollection(pkgmodels.LMSQuizCollection).Update(query, bson.M{"$set": update})
 	if err != nil {
 		log.Println("UpdateLMSQuiz error:", err)
 		return nil, err
@@ -454,13 +454,13 @@ func UpdateLMSQuiz(tenantID bson.ObjectId, publicId string, update bson.M) (*mod
 	return GetLMSQuizByPublicId(tenantID, publicId)
 }
 
-func DeleteLMSQuiz(tenantID bson.ObjectId, publicId string) (*models.LMSQuiz, error) {
+func DeleteLMSQuiz(tenantID bson.ObjectId, publicId string) (*pkgmodels.LMSQuiz, error) {
 	quiz, err := GetLMSQuizByPublicId(tenantID, publicId)
 	if err != nil {
 		return nil, err
 	}
 	quiz.SetDeleted()
-	err = db.GetCollection(sharedmodels.LMSQuizCollection).Update(
+	err = db.GetCollection(pkgmodels.LMSQuizCollection).Update(
 		bson.M{"_id": quiz.Id},
 		bson.M{"$set": bson.M{"timestamps.deleted_at": quiz.DeletedAt}},
 	)
@@ -473,8 +473,8 @@ func DeleteLMSQuiz(tenantID bson.ObjectId, publicId string) (*models.LMSQuiz, er
 
 // ---------- QuizAttempt ----------
 
-func CreateQuizAttempt(attempt *models.QuizAttempt) (*models.QuizAttempt, error) {
-	err := db.GetCollection(sharedmodels.QuizAttemptCollection).Insert(attempt)
+func CreateQuizAttempt(attempt *pkgmodels.QuizAttempt) (*pkgmodels.QuizAttempt, error) {
+	err := db.GetCollection(pkgmodels.QuizAttemptCollection).Insert(attempt)
 	if err != nil {
 		log.Println("CreateQuizAttempt error:", err)
 		return nil, err
@@ -482,9 +482,9 @@ func CreateQuizAttempt(attempt *models.QuizAttempt) (*models.QuizAttempt, error)
 	return attempt, nil
 }
 
-func ListQuizAttempts(tenantID, quizID, contactID bson.ObjectId) ([]*models.QuizAttempt, error) {
-	result := []*models.QuizAttempt{}
-	err := db.GetCollection(sharedmodels.QuizAttemptCollection).Find(bson.M{
+func ListQuizAttempts(tenantID, quizID, contactID bson.ObjectId) ([]*pkgmodels.QuizAttempt, error) {
+	result := []*pkgmodels.QuizAttempt{}
+	err := db.GetCollection(pkgmodels.QuizAttemptCollection).Find(bson.M{
 		"tenant_id":  tenantID,
 		"quiz_id":    quizID,
 		"contact_id": contactID,
@@ -497,7 +497,7 @@ func ListQuizAttempts(tenantID, quizID, contactID bson.ObjectId) ([]*models.Quiz
 }
 
 func CountQuizAttempts(tenantID, quizID, contactID bson.ObjectId) (int, error) {
-	n, err := db.GetCollection(sharedmodels.QuizAttemptCollection).Find(bson.M{
+	n, err := db.GetCollection(pkgmodels.QuizAttemptCollection).Find(bson.M{
 		"tenant_id":  tenantID,
 		"quiz_id":    quizID,
 		"contact_id": contactID,
@@ -508,9 +508,9 @@ func CountQuizAttempts(tenantID, quizID, contactID bson.ObjectId) (int, error) {
 	return n, err
 }
 
-func GetBestQuizAttempt(tenantID, quizID, contactID bson.ObjectId) (*models.QuizAttempt, error) {
-	result := models.QuizAttempt{}
-	err := db.GetCollection(sharedmodels.QuizAttemptCollection).Find(bson.M{
+func GetBestQuizAttempt(tenantID, quizID, contactID bson.ObjectId) (*pkgmodels.QuizAttempt, error) {
+	result := pkgmodels.QuizAttempt{}
+	err := db.GetCollection(pkgmodels.QuizAttemptCollection).Find(bson.M{
 		"tenant_id":  tenantID,
 		"quiz_id":    quizID,
 		"contact_id": contactID,
@@ -524,8 +524,8 @@ func GetBestQuizAttempt(tenantID, quizID, contactID bson.ObjectId) (*models.Quiz
 
 // ---------- Course Product Helpers ----------
 
-func ListCourseProducts(tenantID bson.ObjectId, status string, skip, limit int) ([]*models.Product, error) {
-	result := []*models.Product{}
+func ListCourseProducts(tenantID bson.ObjectId, status string, skip, limit int) ([]*pkgmodels.Product, error) {
+	result := []*pkgmodels.Product{}
 	query := bson.M{
 		"tenant_id":             tenantID,
 		"product_type":          "course",
@@ -534,7 +534,7 @@ func ListCourseProducts(tenantID bson.ObjectId, status string, skip, limit int) 
 	if status != "" {
 		query["status"] = status
 	}
-	q := db.GetCollection(sharedmodels.ProductCollection).Find(query).Sort("-timestamps.created_at")
+	q := db.GetCollection(pkgmodels.ProductCollection).Find(query).Sort("-timestamps.created_at")
 	if skip > 0 {
 		q = q.Skip(skip)
 	}
@@ -558,22 +558,22 @@ func CountCourseProducts(tenantID bson.ObjectId, status string) (int, error) {
 	if status != "" {
 		query["status"] = status
 	}
-	n, err := db.GetCollection(sharedmodels.ProductCollection).Find(query).Count()
+	n, err := db.GetCollection(pkgmodels.ProductCollection).Find(query).Count()
 	if err != nil {
 		log.Println("CountCourseProducts error:", err)
 	}
 	return n, err
 }
 
-func GetCourseProductByPublicId(tenantID bson.ObjectId, publicId string) (*models.Product, error) {
-	result := models.Product{}
+func GetCourseProductByPublicId(tenantID bson.ObjectId, publicId string) (*pkgmodels.Product, error) {
+	result := pkgmodels.Product{}
 	query := bson.M{
 		"tenant_id":             tenantID,
 		"public_id":             publicId,
 		"product_type":          "course",
 		"timestamps.deleted_at": nil,
 	}
-	err := db.GetCollection(sharedmodels.ProductCollection).Find(query).One(&result)
+	err := db.GetCollection(pkgmodels.ProductCollection).Find(query).One(&result)
 	if err != nil {
 		log.Println("GetCourseProductByPublicId error:", err)
 		return nil, err
@@ -582,7 +582,7 @@ func GetCourseProductByPublicId(tenantID bson.ObjectId, publicId string) (*model
 }
 
 func IncrementEnrollmentCount(tenantID, productID bson.ObjectId) error {
-	err := db.GetCollection(sharedmodels.ProductCollection).Update(
+	err := db.GetCollection(pkgmodels.ProductCollection).Update(
 		bson.M{"_id": productID, "tenant_id": tenantID},
 		bson.M{"$inc": bson.M{"enrollment_count": 1}},
 	)
@@ -593,7 +593,7 @@ func IncrementEnrollmentCount(tenantID, productID bson.ObjectId) error {
 }
 
 func IncrementCompletionCount(tenantID, productID bson.ObjectId) error {
-	err := db.GetCollection(sharedmodels.ProductCollection).Update(
+	err := db.GetCollection(pkgmodels.ProductCollection).Update(
 		bson.M{"_id": productID, "tenant_id": tenantID},
 		bson.M{"$inc": bson.M{"completion_count": 1}},
 	)
@@ -603,17 +603,17 @@ func IncrementCompletionCount(tenantID, productID bson.ObjectId) error {
 	return err
 }
 
-func InsertProduct(product models.Product) error {
-	err := db.GetCollection(sharedmodels.ProductCollection).Insert(product)
+func InsertProduct(product pkgmodels.Product) error {
+	err := db.GetCollection(pkgmodels.ProductCollection).Insert(product)
 	if err != nil {
 		log.Println("InsertProduct error:", err)
 	}
 	return err
 }
 
-func ListAllPendingCertificates() ([]*models.Certificate, error) {
-	result := []*models.Certificate{}
-	err := db.GetCollection(sharedmodels.CertificateCollection).Find(bson.M{
+func ListAllPendingCertificates() ([]*pkgmodels.Certificate, error) {
+	result := []*pkgmodels.Certificate{}
+	err := db.GetCollection(pkgmodels.CertificateCollection).Find(bson.M{
 		"gen_status":            "pending",
 		"timestamps.deleted_at": nil,
 	}).Limit(5).All(&result)
@@ -625,7 +625,7 @@ func ListAllPendingCertificates() ([]*models.Certificate, error) {
 }
 
 func UpdateProductField(productID bson.ObjectId, field string, value interface{}) error {
-	err := db.GetCollection(sharedmodels.ProductCollection).UpdateId(productID, bson.M{
+	err := db.GetCollection(pkgmodels.ProductCollection).UpdateId(productID, bson.M{
 		"$set": bson.M{
 			field:                   value,
 			"timestamps.updated_at": time.Now(),
@@ -643,7 +643,7 @@ func UpdateLessonContentField(productID bson.ObjectId, moduleIdx, lessonIdx int,
 		path := fmt.Sprintf("course_modules.%d.lessons.%d.%s", moduleIdx, lessonIdx, k)
 		setFields[path] = v
 	}
-	err := db.GetCollection(sharedmodels.ProductCollection).UpdateId(productID, bson.M{
+	err := db.GetCollection(pkgmodels.ProductCollection).UpdateId(productID, bson.M{
 		"$set": setFields,
 	})
 	if err != nil {

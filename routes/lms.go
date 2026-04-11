@@ -9,11 +9,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"gopkg.in/mgo.v2/bson"
 
-	"github.com/josephalai/sentanyl/lms-service/models"
+	
 	"github.com/josephalai/sentanyl/lms-service/queries"
 	"github.com/josephalai/sentanyl/pkg/auth"
 	"github.com/josephalai/sentanyl/pkg/db"
-	sharedmodels "github.com/josephalai/sentanyl/pkg/models"
+	pkgmodels "github.com/josephalai/sentanyl/pkg/models"
 	"github.com/josephalai/sentanyl/pkg/utils"
 )
 
@@ -147,7 +147,7 @@ func handleCreateCourse(c *gin.Context) {
 		return
 	}
 
-	product := &models.Product{
+	product := &pkgmodels.Product{
 		Id:             bson.NewObjectId(),
 		PublicId:       utils.GeneratePublicId(),
 		TenantID:       tenantID,
@@ -161,13 +161,13 @@ func handleCreateCourse(c *gin.Context) {
 
 	totalLessons := 0
 	for _, m := range req.Modules {
-		mod := &models.CourseModule{
+		mod := &pkgmodels.CourseModule{
 			Slug:  m.Slug,
 			Title: m.Title,
 			Order: m.Order,
 		}
 		for _, l := range m.Lessons {
-			lesson := &models.CourseLesson{
+			lesson := &pkgmodels.CourseLesson{
 				Slug:          l.Slug,
 				Title:         l.Title,
 				Order:         l.Order,
@@ -305,16 +305,16 @@ func handleUpdateCourse(c *gin.Context) {
 	}
 
 	if req.Modules != nil {
-		var modules []*models.CourseModule
+		var modules []*pkgmodels.CourseModule
 		totalLessons := 0
 		for _, m := range req.Modules {
-			mod := &models.CourseModule{
+			mod := &pkgmodels.CourseModule{
 				Slug:  m.Slug,
 				Title: m.Title,
 				Order: m.Order,
 			}
 			for _, l := range m.Lessons {
-				lesson := &models.CourseLesson{
+				lesson := &pkgmodels.CourseLesson{
 					Slug:          l.Slug,
 					Title:         l.Title,
 					Order:         l.Order,
@@ -337,7 +337,7 @@ func handleUpdateCourse(c *gin.Context) {
 
 	now := time.Now()
 	update["timestamps.updated_at"] = now
-	err = db.GetCollection(sharedmodels.ProductCollection).Update(
+	err = db.GetCollection(pkgmodels.ProductCollection).Update(
 		bson.M{"_id": product.Id},
 		bson.M{"$set": update},
 	)
@@ -365,7 +365,7 @@ func handleDeleteCourse(c *gin.Context) {
 	}
 
 	now := time.Now()
-	db.GetCollection(sharedmodels.ProductCollection).Update(
+	db.GetCollection(pkgmodels.ProductCollection).Update(
 		bson.M{"_id": product.Id},
 		bson.M{"$set": bson.M{"timestamps.deleted_at": now}},
 	)
@@ -403,7 +403,7 @@ func handleListEnrollments(c *gin.Context) {
 		contactID = &oid
 	}
 
-	var enrollments []*models.CourseEnrollment
+	var enrollments []*pkgmodels.CourseEnrollment
 	var err error
 
 	if contactID != nil {
@@ -482,7 +482,7 @@ func handleCreateEnrollment(c *gin.Context) {
 		return
 	}
 
-	enrollment := &models.CourseEnrollment{
+	enrollment := &pkgmodels.CourseEnrollment{
 		Id:              bson.NewObjectId(),
 		PublicId:        utils.GeneratePublicId(),
 		TenantID:        tenantID,
@@ -641,7 +641,7 @@ func handleUpdateLessonProgress(c *gin.Context) {
 		return
 	}
 
-	progress := &models.LessonProgress{
+	progress := &pkgmodels.LessonProgress{
 		LessonSlug:      req.LessonSlug,
 		ModuleSlug:      req.ModuleSlug,
 		WatchPercent:    req.WatchPercent,
@@ -688,7 +688,7 @@ func handleUpdateLessonProgress(c *gin.Context) {
 			"completed_at": now,
 		})
 
-		completion := &models.LessonCompletion{
+		completion := &pkgmodels.LessonCompletion{
 			Id:           bson.NewObjectId(),
 			TenantID:     tenantID,
 			ContactID:    enrollment.ContactID,
@@ -703,7 +703,7 @@ func handleUpdateLessonProgress(c *gin.Context) {
 
 		queries.IncrementCompletionCount(tenantID, enrollment.ProductID)
 
-		cert := &models.Certificate{
+		cert := &pkgmodels.Certificate{
 			Id:              bson.NewObjectId(),
 			PublicId:        utils.GeneratePublicId(),
 			TenantID:        tenantID,
@@ -846,10 +846,10 @@ func handleSubmitQuizAttempt(c *gin.Context) {
 
 	correctCount := 0
 	totalQuestions := len(quiz.Questions)
-	var attemptAnswers []*models.QuizAttemptAnswer
+	var attemptAnswers []*pkgmodels.QuizAttemptAnswer
 
 	for _, ans := range req.Answers {
-		aa := &models.QuizAttemptAnswer{
+		aa := &pkgmodels.QuizAttemptAnswer{
 			QuestionSlug: ans.QuestionSlug,
 		}
 		if ans.AnswerIndex != nil {
@@ -883,7 +883,7 @@ func handleSubmitQuizAttempt(c *gin.Context) {
 	}
 	passed := score >= quiz.PassThreshold
 
-	attempt := &models.QuizAttempt{
+	attempt := &pkgmodels.QuizAttempt{
 		Id:            bson.NewObjectId(),
 		TenantID:      tenantID,
 		ContactID:     contactID,
@@ -902,7 +902,7 @@ func handleSubmitQuizAttempt(c *gin.Context) {
 		for _, p := range enrollment.Progress {
 			if p.ModuleSlug == quiz.ModuleSlug {
 				trueVal := true
-				progressUpdate := &models.LessonProgress{
+				progressUpdate := &pkgmodels.LessonProgress{
 					LessonSlug:      p.LessonSlug,
 					ModuleSlug:      p.ModuleSlug,
 					WatchPercent:    p.WatchPercent,
