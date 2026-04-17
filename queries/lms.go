@@ -826,6 +826,36 @@ func DeleteSourceReference(tenantID bson.ObjectId, publicId string) error {
 	return err
 }
 
+func GetSourceReferenceByPublicId(tenantID bson.ObjectId, publicId string) (*pkgmodels.SourceReference, error) {
+	result := pkgmodels.SourceReference{}
+	query := bson.M{
+		"tenant_id":             tenantID,
+		"public_id":             publicId,
+		"timestamps.deleted_at": nil,
+	}
+	err := db.GetCollection(pkgmodels.SourceReferenceCollection).Find(query).One(&result)
+	if err != nil {
+		log.Println("GetSourceReferenceByPublicId error:", err)
+		return nil, err
+	}
+	return &result, nil
+}
+
+// ---------- Product Update ----------
+
+func UpdateProduct(tenantID bson.ObjectId, publicId string, update bson.M) error {
+	query := bson.M{
+		"tenant_id":             tenantID,
+		"public_id":             publicId,
+		"timestamps.deleted_at": nil,
+	}
+	err := db.GetCollection(pkgmodels.ProductCollection).Update(query, bson.M{"$set": update})
+	if err != nil {
+		log.Println("UpdateProduct error:", err)
+	}
+	return err
+}
+
 // ---------- CertificateTemplate CRUD ----------
 
 func CreateCertificateTemplate(tmpl *pkgmodels.CertificateTemplate) (*pkgmodels.CertificateTemplate, error) {
