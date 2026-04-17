@@ -365,8 +365,8 @@ func handleUpdateCourse(c *gin.Context) {
 		update["status"] = *req.Status
 	}
 
+	var builtModules []*pkgmodels.CourseModule
 	if req.Modules != nil {
-		var modules []*pkgmodels.CourseModule
 		totalLessons := 0
 		for _, m := range req.Modules {
 			mod := &pkgmodels.CourseModule{
@@ -407,10 +407,28 @@ func handleUpdateCourse(c *gin.Context) {
 				mod.Lessons = append(mod.Lessons, lesson)
 				totalLessons++
 			}
-			modules = append(modules, mod)
+			builtModules = append(builtModules, mod)
 		}
-		update["course_modules"] = modules
+		update["course_modules"] = builtModules
 		update["total_lessons"] = totalLessons
+	}
+
+	if req.Status != nil && *req.Status == "published" {
+		titleToCheck := product.Name
+		if req.Title != nil {
+			titleToCheck = *req.Title
+		}
+		modulesToCheck := product.CourseModules
+		if req.Modules != nil {
+			modulesToCheck = builtModules
+		}
+		if verrs := validatePublishCourse(titleToCheck, modulesToCheck); len(verrs) > 0 {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":   "publish validation failed",
+				"details": verrs,
+			})
+			return
+		}
 	}
 
 	now := time.Now()
