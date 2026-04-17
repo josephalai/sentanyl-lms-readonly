@@ -8,7 +8,6 @@ import (
 
 	"github.com/josephalai/sentanyl/lms-service/queries"
 	pkgmodels "github.com/josephalai/sentanyl/pkg/models"
-	"github.com/josephalai/sentanyl/pkg/utils"
 )
 
 // ReferenceService handles ingestion of txt, pdf, and pasted references.
@@ -88,6 +87,5 @@ func GetSourceReferenceByPublicId(tenantID bson.ObjectId, publicId string) (*pkg
 }
 
 func init() {
-	_ = utils.GeneratePublicId // ensure import is used
 	log.Println("[LMS] Reference service initialized")
 }
