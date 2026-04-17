@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"encoding/json"
 	"log"
 	"net/http"
 	"strconv"
@@ -9,8 +10,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"gopkg.in/mgo.v2/bson"
 
-	
 	"github.com/josephalai/sentanyl/lms-service/queries"
+	"github.com/josephalai/sentanyl/lms-service/services"
 	"github.com/josephalai/sentanyl/pkg/auth"
 	"github.com/josephalai/sentanyl/pkg/db"
 	pkgmodels "github.com/josephalai/sentanyl/pkg/models"
@@ -1153,8 +1154,6 @@ func handleRegenerateCertificate(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "regeneration queued"})
 }
 
-const referenceChunkSize = 2000
-
 // ---------- Generation Handlers ----------
 
 func handleGenerateOutline(c *gin.Context) {
@@ -1165,6 +1164,14 @@ func handleGenerateOutline(c *gin.Context) {
 	}
 
 	courseId := c.Param("courseId")
+
+	// Validate the course exists
+	_, err := queries.GetCourseProductByPublicId(tenantID, courseId)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "course not found"})
+		return
+	}
+
 	var req struct {
 		Prompt       string   `json:"prompt"`
 		Audience     string   `json:"audience"`
@@ -1182,29 +1189,32 @@ func handleGenerateOutline(c *gin.Context) {
 		return
 	}
 
-	job := pkgmodels.NewGenerationJob(tenantID, "", "create")
-	job.ProductPublicId = courseId
-	job.Prompt = req.Prompt
-	job.Audience = req.Audience
-	job.Outcome = req.Outcome
-	job.Tone = req.Tone
-	job.ModuleCount = req.ModuleCount
-	job.QuizzesEnabled = req.Quizzes
-	job.CertEnabled = req.Certificate
-	job.DefaultMedia = req.DefaultMedia
-	job.ExtraContext = req.ExtraContext
-	job.ReferenceIds = req.ReferenceIds
-	job.Status = pkgmodels.GenStatusGeneratingOutline
-	now := time.Now()
-	job.StartedAt = &now
-
-	created, err := queries.CreateGenerationJob(job)
+	// Delegate to shared GenerationService
+	genSvc := services.NewGenerationService()
+	job, outline, err := genSvc.GenerateOutline(
+		tenantID,
+		courseId,
+		req.Prompt,
+		req.Audience,
+		req.Outcome,
+		req.Tone,
+		req.ModuleCount,
+		req.Quizzes,
+		req.Certificate,
+		req.DefaultMedia,
+		req.ExtraContext,
+		req.ReferenceIds,
+	)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create generation job"})
+		log.Printf("[LMS] Error generating outline: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate outline"})
 		return
 	}
 
-	c.JSON(http.StatusCreated, created)
+	c.JSON(http.StatusCreated, gin.H{
+		"job":     job,
+		"outline": outline,
+	})
 }
 
 func handleGenerateFullCourse(c *gin.Context) {
@@ -1216,41 +1226,69 @@ func handleGenerateFullCourse(c *gin.Context) {
 
 	courseId := c.Param("courseId")
 	var req struct {
-		JobId       string `json:"job_id"`
-		OutlineJSON string `json:"outline_json"`
+		JobId          string `json:"job_id"`
+		OutlineJSON    string `json:"outline_json"`
+		DefaultMedia   string `json:"default_media"`
+		QuizzesEnabled bool   `json:"quizzes_enabled"`
+		CertEnabled    bool   `json:"cert_enabled"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	if req.JobId != "" {
-		updated, err := queries.UpdateGenerationJob(tenantID, req.JobId, bson.M{
-			"status":       string(pkgmodels.GenStatusGeneratingTree),
-			"outline_json": req.OutlineJSON,
-		})
+	// Parse the outline
+	var outline services.CourseOutline
+
+	// If a job ID was provided, fetch outline from the existing job
+	if req.JobId != "" && req.OutlineJSON == "" {
+		existingJob, err := queries.GetGenerationJobByPublicId(tenantID, req.JobId)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update generation job"})
+			c.JSON(http.StatusNotFound, gin.H{"error": "generation job not found"})
 			return
 		}
-		c.JSON(http.StatusOK, updated)
+		req.OutlineJSON = existingJob.OutlineJSON
+		if req.DefaultMedia == "" {
+			req.DefaultMedia = existingJob.DefaultMedia
+		}
+		req.QuizzesEnabled = existingJob.QuizzesEnabled
+		req.CertEnabled = existingJob.CertEnabled
+	}
+
+	if req.OutlineJSON == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "outline_json is required (either directly or via job_id)"})
 		return
 	}
 
-	job := pkgmodels.NewGenerationJob(tenantID, "", "create")
-	job.ProductPublicId = courseId
-	job.OutlineJSON = req.OutlineJSON
-	job.Status = pkgmodels.GenStatusGeneratingTree
-	now := time.Now()
-	job.StartedAt = &now
+	if err := json.Unmarshal([]byte(req.OutlineJSON), &outline); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid outline JSON: " + err.Error()})
+		return
+	}
 
-	created, err := queries.CreateGenerationJob(job)
+	// Delegate to shared GenerationService
+	genSvc := services.NewGenerationService()
+	job, err := genSvc.MaterializeCourse(
+		tenantID,
+		courseId,
+		req.JobId,
+		outline,
+		req.DefaultMedia,
+		req.QuizzesEnabled,
+		req.CertEnabled,
+	)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create generation job"})
+		log.Printf("[LMS] Error materializing course: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate full course: " + err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusCreated, created)
+	// Fetch the updated course to return alongside the job
+	updatedProduct, _ := queries.GetCourseProductByPublicId(tenantID, courseId)
+
+	c.JSON(http.StatusOK, gin.H{
+		"job":    job,
+		"course": updatedProduct,
+	})
 }
 
 func handleEditCoursePrompt(c *gin.Context) {
@@ -1261,6 +1299,14 @@ func handleEditCoursePrompt(c *gin.Context) {
 	}
 
 	courseId := c.Param("courseId")
+
+	// Validate the course exists
+	_, err := queries.GetCourseProductByPublicId(tenantID, courseId)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "course not found"})
+		return
+	}
+
 	var req struct {
 		Prompt     string `json:"prompt" binding:"required"`
 		TargetType string `json:"target_type"`
@@ -1272,33 +1318,23 @@ func handleEditCoursePrompt(c *gin.Context) {
 		return
 	}
 
-	targetType := req.TargetType
-	if targetType == "" {
-		targetType = "course"
-	}
-	targetId := req.TargetId
-	if targetId == "" {
-		targetId = courseId
-	}
-
-	patch := pkgmodels.NewContentPatch(tenantID, "", courseId, targetType, targetId)
-	patch.Prompt = req.Prompt
-
-	patch.Operations = []pkgmodels.PatchOperation{
-		{
-			Op:    "replace",
-			Path:  "/" + targetType + "/" + targetId,
-			Value: "LLM-generated content pending",
-		},
-	}
-
-	created, err := queries.CreateContentPatch(patch)
+	// Delegate to shared PatchService
+	patchSvc := services.NewPatchService()
+	patch, err := patchSvc.CreateEditPatch(
+		tenantID,
+		courseId,
+		req.Prompt,
+		req.TargetType,
+		req.TargetId,
+		req.Scope,
+	)
 	if err != nil {
+		log.Printf("[LMS] Error creating edit patch: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create edit patch"})
 		return
 	}
 
-	c.JSON(http.StatusCreated, created)
+	c.JSON(http.StatusCreated, patch)
 }
 
 func handleListGenerationJobs(c *gin.Context) {
@@ -1386,60 +1422,13 @@ func handleApprovePatch(c *gin.Context) {
 	}
 
 	patchId := c.Param("patchId")
-	patch, err := queries.GetContentPatchByPublicId(tenantID, patchId)
+
+	// Delegate to shared PatchService
+	patchSvc := services.NewPatchService()
+	updated, err := patchSvc.ApplyPatch(tenantID, patchId)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "patch not found"})
-		return
-	}
-
-	if patch.Status != "pending" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "patch is not in pending state"})
-		return
-	}
-
-	// Apply patch operations to the course tree
-	product, err := queries.GetCourseProductByPublicId(tenantID, patch.ProductPublicId)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "course not found for patch"})
-		return
-	}
-
-	snapshotBefore := product.CourseModules
-
-	for _, op := range patch.Operations {
-		applyPatchOperation(product, op)
-	}
-
-	// Persist course tree update
-	updateDoc := bson.M{
-		"course_modules":       product.CourseModules,
-		"timestamps.updated_at": time.Now(),
-	}
-	err = db.GetCollection(pkgmodels.ProductCollection).Update(
-		bson.M{"_id": product.Id},
-		bson.M{"$set": updateDoc},
-	)
-	if err != nil {
-		log.Printf("[LMS] Error applying patch to course: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to apply patch"})
-		return
-	}
-
-	// Record revision event
-	revEvent := pkgmodels.NewCourseRevisionEvent(tenantID, patch.ProductPublicId, "patch_apply",
-		"Applied patch "+patchId+" ("+patch.TargetType+"/"+patch.TargetId+")")
-	revEvent.PatchPublicId = patchId
-	revEvent.SnapshotBefore = snapshotBefore
-	revEvent.SnapshotAfter = product.CourseModules
-	queries.CreateCourseRevisionEvent(revEvent)
-
-	now := time.Now()
-	updated, err := queries.UpdateContentPatch(tenantID, patchId, bson.M{
-		"status":     "applied",
-		"applied_at": now,
-	})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update patch status"})
+		log.Printf("[LMS] Error applying patch: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -1491,27 +1480,11 @@ func handleUploadReference(c *gin.Context) {
 		return
 	}
 
-	ref := pkgmodels.NewSourceReference(tenantID, product.Id, "", req.FileName, req.FileType)
-	ref.OriginalSize = int64(len(req.Content))
-	ref.ExtractedText = req.Content
-
-	chunkSize := referenceChunkSize
-	text := req.Content
-	for i := 0; i < len(text); i += chunkSize {
-		end := i + chunkSize
-		if end > len(text) {
-			end = len(text)
-		}
-		ref.Chunks = append(ref.Chunks, pkgmodels.TextChunk{
-			Index: len(ref.Chunks),
-			Text:  text[i:end],
-			Start: i,
-			End:   end,
-		})
-	}
-
-	created, err := queries.CreateSourceReference(ref)
+	// Delegate to shared ReferenceService
+	refSvc := services.NewReferenceService()
+	created, err := refSvc.IngestText(tenantID, product.Id, req.FileName, req.FileType, req.Content)
 	if err != nil {
+		log.Printf("[LMS] Error ingesting reference: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create reference"})
 		return
 	}
