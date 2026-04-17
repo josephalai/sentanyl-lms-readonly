@@ -871,3 +871,28 @@ func UpdateCertificateTemplate(tenantID bson.ObjectId, publicId string, update b
 	}).One(&result)
 	return &result, err
 }
+
+// ---------- Course Revision Events ----------
+
+func CreateCourseRevisionEvent(event *pkgmodels.CourseRevisionEvent) (*pkgmodels.CourseRevisionEvent, error) {
+	err := db.GetCollection(pkgmodels.CourseRevisionEventCollection).Insert(event)
+	if err != nil {
+		log.Println("CreateCourseRevisionEvent error:", err)
+		return nil, err
+	}
+	return event, nil
+}
+
+func ListCourseRevisionEvents(tenantID bson.ObjectId, productPublicId string, skip, limit int) ([]*pkgmodels.CourseRevisionEvent, error) {
+	var results []*pkgmodels.CourseRevisionEvent
+	query := bson.M{
+		"tenant_id":          tenantID,
+		"product_public_id":  productPublicId,
+	}
+	err := db.GetCollection(pkgmodels.CourseRevisionEventCollection).Find(query).Sort("-created_at").Skip(skip).Limit(limit).All(&results)
+	if err != nil {
+		log.Println("ListCourseRevisionEvents error:", err)
+		return nil, err
+	}
+	return results, nil
+}

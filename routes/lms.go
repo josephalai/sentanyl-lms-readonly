@@ -37,7 +37,10 @@ func RegisterLMSRoutes(tenant *gin.RouterGroup) {
 
 		// Quizzes
 		lms.GET("/quizzes", handleListQuizzes)
+		lms.POST("/quizzes", handleCreateQuiz)
 		lms.GET("/quizzes/:quizId", handleGetQuiz)
+		lms.PUT("/quizzes/:quizId", handleUpdateQuiz)
+		lms.DELETE("/quizzes/:quizId", handleDeleteQuiz)
 		lms.POST("/quizzes/:quizId/attempt", handleSubmitQuizAttempt)
 		lms.GET("/quizzes/:quizId/attempts", handleListQuizAttempts)
 
@@ -146,20 +149,29 @@ func handleCreateCourse(c *gin.Context) {
 		InstructorName string `json:"instructor_name"`
 		Thumbnail      string `json:"thumbnail"`
 		Modules        []struct {
-			Slug    string `json:"slug" binding:"required"`
-			Title   string `json:"title" binding:"required"`
-			Order   int    `json:"order"`
-			Lessons []struct {
-				Slug          string `json:"slug" binding:"required"`
-				Title         string `json:"title" binding:"required"`
-				Order         int    `json:"order"`
-				VideoURL      string `json:"video_url"`
-				MediaPublicId string `json:"media_public_id"`
-				Duration      string `json:"duration"`
-				ContentHTML   string `json:"content_html"`
-				IsFree        bool   `json:"is_free"`
-				IsDraft       bool   `json:"is_draft"`
-				DripDays      int    `json:"drip_days"`
+			Slug     string `json:"slug" binding:"required"`
+			Title    string `json:"title" binding:"required"`
+			Order    int    `json:"order"`
+			QuizSlug string `json:"quiz_slug"`
+			Lessons  []struct {
+				Slug                 string                 `json:"slug" binding:"required"`
+				Title                string                 `json:"title" binding:"required"`
+				Order                int                    `json:"order"`
+				VideoURL             string                 `json:"video_url"`
+				MediaPublicId        string                 `json:"media_public_id"`
+				Duration             string                 `json:"duration"`
+				DurationSec          int64                  `json:"duration_sec"`
+				ContentHTML          string                 `json:"content_html"`
+				ContentGenStatus     string                 `json:"content_gen_status"`
+				ContentGenConfig     map[string]interface{} `json:"content_gen_config"`
+				IsFree               bool                   `json:"is_free"`
+				IsDraft              bool                   `json:"is_draft"`
+				DripDays             int                    `json:"drip_days"`
+				VideoMode            string                 `json:"video_mode"`
+				VideoStubScript      string                 `json:"video_stub_script"`
+				VideoStubDescription string                 `json:"video_stub_description"`
+				VideoUploadPending   bool                   `json:"video_upload_pending"`
+				ContentMarkdown      string                 `json:"content_markdown"`
 			} `json:"lessons"`
 		} `json:"modules"`
 	}
@@ -184,22 +196,39 @@ func handleCreateCourse(c *gin.Context) {
 	totalLessons := 0
 	for _, m := range req.Modules {
 		mod := &pkgmodels.CourseModule{
-			Slug:  m.Slug,
-			Title: m.Title,
-			Order: m.Order,
+			Slug:     m.Slug,
+			Title:    m.Title,
+			Order:    m.Order,
+			QuizSlug: m.QuizSlug,
 		}
 		for _, l := range m.Lessons {
 			lesson := &pkgmodels.CourseLesson{
-				Slug:          l.Slug,
-				Title:         l.Title,
-				Order:         l.Order,
-				VideoURL:      l.VideoURL,
-				MediaPublicId: l.MediaPublicId,
-				Duration:      l.Duration,
-				ContentHTML:   l.ContentHTML,
-				IsFree:        l.IsFree,
-				IsDraft:       l.IsDraft,
-				DripDays:      l.DripDays,
+				Slug:                 l.Slug,
+				Title:                l.Title,
+				Order:                l.Order,
+				VideoURL:             l.VideoURL,
+				MediaPublicId:        l.MediaPublicId,
+				Duration:             l.Duration,
+				DurationSec:          l.DurationSec,
+				ContentHTML:          l.ContentHTML,
+				ContentGenStatus:     l.ContentGenStatus,
+				IsFree:               l.IsFree,
+				IsDraft:              l.IsDraft,
+				DripDays:             l.DripDays,
+				VideoMode:            pkgmodels.VideoMode(l.VideoMode),
+				VideoStubScript:      l.VideoStubScript,
+				VideoStubDescription: l.VideoStubDescription,
+				VideoUploadPending:   l.VideoUploadPending,
+				ContentMarkdown:      l.ContentMarkdown,
+			}
+			if l.ContentGenConfig != nil {
+				lesson.ContentGenConfig = &pkgmodels.GenConfig{}
+				if v, ok := l.ContentGenConfig["instruction"].(string); ok {
+					lesson.ContentGenConfig.Instruction = v
+				}
+				if v, ok := l.ContentGenConfig["theme"].(string); ok {
+					lesson.ContentGenConfig.Theme = v
+				}
 			}
 			mod.Lessons = append(mod.Lessons, lesson)
 			totalLessons++
@@ -286,20 +315,29 @@ func handleUpdateCourse(c *gin.Context) {
 		Thumbnail      *string `json:"thumbnail,omitempty"`
 		Status         *string `json:"status,omitempty"`
 		Modules        []struct {
-			Slug    string `json:"slug"`
-			Title   string `json:"title"`
-			Order   int    `json:"order"`
-			Lessons []struct {
-				Slug          string `json:"slug"`
-				Title         string `json:"title"`
-				Order         int    `json:"order"`
-				VideoURL      string `json:"video_url"`
-				MediaPublicId string `json:"media_public_id"`
-				Duration      string `json:"duration"`
-				ContentHTML   string `json:"content_html"`
-				IsFree        bool   `json:"is_free"`
-				IsDraft       bool   `json:"is_draft"`
-				DripDays      int    `json:"drip_days"`
+			Slug     string `json:"slug"`
+			Title    string `json:"title"`
+			Order    int    `json:"order"`
+			QuizSlug string `json:"quiz_slug"`
+			Lessons  []struct {
+				Slug                 string                 `json:"slug"`
+				Title                string                 `json:"title"`
+				Order                int                    `json:"order"`
+				VideoURL             string                 `json:"video_url"`
+				MediaPublicId        string                 `json:"media_public_id"`
+				Duration             string                 `json:"duration"`
+				DurationSec          int64                  `json:"duration_sec"`
+				ContentHTML          string                 `json:"content_html"`
+				ContentGenStatus     string                 `json:"content_gen_status"`
+				ContentGenConfig     map[string]interface{} `json:"content_gen_config"`
+				IsFree               bool                   `json:"is_free"`
+				IsDraft              bool                   `json:"is_draft"`
+				DripDays             int                    `json:"drip_days"`
+				VideoMode            string                 `json:"video_mode"`
+				VideoStubScript      string                 `json:"video_stub_script"`
+				VideoStubDescription string                 `json:"video_stub_description"`
+				VideoUploadPending   bool                   `json:"video_upload_pending"`
+				ContentMarkdown      string                 `json:"content_markdown"`
 			} `json:"lessons"`
 		} `json:"modules,omitempty"`
 	}
@@ -331,22 +369,39 @@ func handleUpdateCourse(c *gin.Context) {
 		totalLessons := 0
 		for _, m := range req.Modules {
 			mod := &pkgmodels.CourseModule{
-				Slug:  m.Slug,
-				Title: m.Title,
-				Order: m.Order,
+				Slug:     m.Slug,
+				Title:    m.Title,
+				Order:    m.Order,
+				QuizSlug: m.QuizSlug,
 			}
 			for _, l := range m.Lessons {
 				lesson := &pkgmodels.CourseLesson{
-					Slug:          l.Slug,
-					Title:         l.Title,
-					Order:         l.Order,
-					VideoURL:      l.VideoURL,
-					MediaPublicId: l.MediaPublicId,
-					Duration:      l.Duration,
-					ContentHTML:   l.ContentHTML,
-					IsFree:        l.IsFree,
-					IsDraft:       l.IsDraft,
-					DripDays:      l.DripDays,
+					Slug:                 l.Slug,
+					Title:                l.Title,
+					Order:                l.Order,
+					VideoURL:             l.VideoURL,
+					MediaPublicId:        l.MediaPublicId,
+					Duration:             l.Duration,
+					DurationSec:          l.DurationSec,
+					ContentHTML:          l.ContentHTML,
+					ContentGenStatus:     l.ContentGenStatus,
+					IsFree:               l.IsFree,
+					IsDraft:              l.IsDraft,
+					DripDays:             l.DripDays,
+					VideoMode:            pkgmodels.VideoMode(l.VideoMode),
+					VideoStubScript:      l.VideoStubScript,
+					VideoStubDescription: l.VideoStubDescription,
+					VideoUploadPending:   l.VideoUploadPending,
+					ContentMarkdown:      l.ContentMarkdown,
+				}
+				if l.ContentGenConfig != nil {
+					lesson.ContentGenConfig = &pkgmodels.GenConfig{}
+					if v, ok := l.ContentGenConfig["instruction"].(string); ok {
+						lesson.ContentGenConfig.Instruction = v
+					}
+					if v, ok := l.ContentGenConfig["theme"].(string); ok {
+						lesson.ContentGenConfig.Theme = v
+					}
 				}
 				mod.Lessons = append(mod.Lessons, lesson)
 				totalLessons++
@@ -725,6 +780,12 @@ func handleUpdateLessonProgress(c *gin.Context) {
 
 		queries.IncrementCompletionCount(tenantID, enrollment.ProductID)
 
+		// Use certificate template if configured, otherwise default
+		certTemplate := "default"
+		if tmpl, tErr := queries.GetCertificateTemplateByProduct(tenantID, enrollment.ProductID); tErr == nil && tmpl.Enabled {
+			certTemplate = tmpl.TemplateName
+		}
+
 		cert := &pkgmodels.Certificate{
 			Id:              bson.NewObjectId(),
 			PublicId:        utils.GeneratePublicId(),
@@ -735,7 +796,7 @@ func handleUpdateLessonProgress(c *gin.Context) {
 			EnrollmentID:    enrollment.Id,
 			CourseTitle:     product.Name,
 			CompletedAt:     now,
-			Template:        "default",
+			Template:        certTemplate,
 			GenStatus:       "pending",
 		}
 		queries.CreateCertificate(cert)
@@ -1143,11 +1204,7 @@ func handleGenerateOutline(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusCreated, gin.H{
-		"job_id":  created.PublicId,
-		"status":  string(created.Status),
-		"message": "Outline generation job created",
-	})
+	c.JSON(http.StatusCreated, created)
 }
 
 func handleGenerateFullCourse(c *gin.Context) {
@@ -1168,7 +1225,7 @@ func handleGenerateFullCourse(c *gin.Context) {
 	}
 
 	if req.JobId != "" {
-		_, err := queries.UpdateGenerationJob(tenantID, req.JobId, bson.M{
+		updated, err := queries.UpdateGenerationJob(tenantID, req.JobId, bson.M{
 			"status":       string(pkgmodels.GenStatusGeneratingTree),
 			"outline_json": req.OutlineJSON,
 		})
@@ -1176,11 +1233,7 @@ func handleGenerateFullCourse(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update generation job"})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{
-			"job_id":  req.JobId,
-			"status":  string(pkgmodels.GenStatusGeneratingTree),
-			"message": "Full course generation started",
-		})
+		c.JSON(http.StatusOK, updated)
 		return
 	}
 
@@ -1197,11 +1250,7 @@ func handleGenerateFullCourse(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusCreated, gin.H{
-		"job_id":  created.PublicId,
-		"status":  string(created.Status),
-		"message": "Full course generation started",
-	})
+	c.JSON(http.StatusCreated, created)
 }
 
 func handleEditCoursePrompt(c *gin.Context) {
@@ -1249,12 +1298,7 @@ func handleEditCoursePrompt(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusCreated, gin.H{
-		"patch_id":   created.PublicId,
-		"status":     created.Status,
-		"operations": created.Operations,
-		"message":    "Edit patch created for review",
-	})
+	c.JSON(http.StatusCreated, created)
 }
 
 func handleListGenerationJobs(c *gin.Context) {
@@ -1342,21 +1386,64 @@ func handleApprovePatch(c *gin.Context) {
 	}
 
 	patchId := c.Param("patchId")
-	now := time.Now()
-	updated, err := queries.UpdateContentPatch(tenantID, patchId, bson.M{
-		"status":     "approved",
-		"applied_at": now,
-	})
+	patch, err := queries.GetContentPatchByPublicId(tenantID, patchId)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to approve patch"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "patch not found"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"patch_id": updated.PublicId,
-		"status":   updated.Status,
-		"message":  "Patch approved and applied",
+	if patch.Status != "pending" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "patch is not in pending state"})
+		return
+	}
+
+	// Apply patch operations to the course tree
+	product, err := queries.GetCourseProductByPublicId(tenantID, patch.ProductPublicId)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "course not found for patch"})
+		return
+	}
+
+	snapshotBefore := product.CourseModules
+
+	for _, op := range patch.Operations {
+		applyPatchOperation(product, op)
+	}
+
+	// Persist course tree update
+	updateDoc := bson.M{
+		"course_modules":       product.CourseModules,
+		"timestamps.updated_at": time.Now(),
+	}
+	err = db.GetCollection(pkgmodels.ProductCollection).Update(
+		bson.M{"_id": product.Id},
+		bson.M{"$set": updateDoc},
+	)
+	if err != nil {
+		log.Printf("[LMS] Error applying patch to course: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to apply patch"})
+		return
+	}
+
+	// Record revision event
+	revEvent := pkgmodels.NewCourseRevisionEvent(tenantID, patch.ProductPublicId, "patch_apply",
+		"Applied patch "+patchId+" ("+patch.TargetType+"/"+patch.TargetId+")")
+	revEvent.PatchPublicId = patchId
+	revEvent.SnapshotBefore = snapshotBefore
+	revEvent.SnapshotAfter = product.CourseModules
+	queries.CreateCourseRevisionEvent(revEvent)
+
+	now := time.Now()
+	updated, err := queries.UpdateContentPatch(tenantID, patchId, bson.M{
+		"status":     "applied",
+		"applied_at": now,
 	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update patch status"})
+		return
+	}
+
+	c.JSON(http.StatusOK, updated)
 }
 
 func handleRejectPatch(c *gin.Context) {
@@ -1375,11 +1462,7 @@ func handleRejectPatch(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"patch_id": updated.PublicId,
-		"status":   updated.Status,
-		"message":  "Patch rejected",
-	})
+	c.JSON(http.StatusOK, updated)
 }
 
 // ---------- Reference Handlers ----------
@@ -1433,13 +1516,7 @@ func handleUploadReference(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusCreated, gin.H{
-		"reference_id": created.PublicId,
-		"file_name":    created.FileName,
-		"file_type":    created.FileType,
-		"chunks":       len(created.Chunks),
-		"message":      "Reference uploaded and processed",
-	})
+	c.JSON(http.StatusCreated, created)
 }
 
 func handleListReferences(c *gin.Context) {
@@ -1585,4 +1662,263 @@ func handleUpdateCertificateTemplate(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, updated)
+}
+
+// ---------- Quiz CRUD Handlers ----------
+
+func handleCreateQuiz(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	var req struct {
+		ProductPublicId string `json:"product_public_id" binding:"required"`
+		ModuleSlug      string `json:"module_slug" binding:"required"`
+		Slug            string `json:"slug" binding:"required"`
+		Title           string `json:"title" binding:"required"`
+		PassThreshold   int    `json:"pass_threshold"`
+		MaxAttempts     int    `json:"max_attempts"`
+		Questions       []struct {
+			Slug          string   `json:"slug"`
+			Type          string   `json:"type"`
+			Title         string   `json:"title"`
+			Options       []string `json:"options"`
+			CorrectAnswer int      `json:"correct_answer"`
+			CorrectText   string   `json:"correct_text"`
+			Order         int      `json:"order"`
+		} `json:"questions"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	product, err := queries.GetCourseProductByPublicId(tenantID, req.ProductPublicId)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "course not found"})
+		return
+	}
+
+	quiz := pkgmodels.NewLMSQuiz()
+	quiz.TenantID = tenantID
+	quiz.ProductID = product.Id
+	quiz.ModuleSlug = req.ModuleSlug
+	quiz.Slug = req.Slug
+	quiz.Title = req.Title
+	quiz.PassThreshold = req.PassThreshold
+	quiz.MaxAttempts = req.MaxAttempts
+
+	if quiz.PassThreshold == 0 {
+		quiz.PassThreshold = 70
+	}
+	if quiz.MaxAttempts == 0 {
+		quiz.MaxAttempts = 3
+	}
+
+	for _, q := range req.Questions {
+		question := &pkgmodels.LMSQuizQuestion{
+			Slug:          q.Slug,
+			Type:          q.Type,
+			Title:         q.Title,
+			Options:       q.Options,
+			CorrectAnswer: q.CorrectAnswer,
+			CorrectText:   q.CorrectText,
+			Order:         q.Order,
+		}
+		quiz.Questions = append(quiz.Questions, question)
+	}
+
+	quiz.SetCreated()
+	created, err := queries.CreateLMSQuiz(quiz)
+	if err != nil {
+		log.Printf("[LMS] Error creating quiz: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create quiz"})
+		return
+	}
+
+	c.JSON(http.StatusCreated, created)
+}
+
+func handleUpdateQuiz(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	quizId := c.Param("quizId")
+	quiz, err := queries.GetLMSQuizByPublicId(tenantID, quizId)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "quiz not found"})
+		return
+	}
+
+	var req struct {
+		Title         *string `json:"title,omitempty"`
+		PassThreshold *int    `json:"pass_threshold,omitempty"`
+		MaxAttempts   *int    `json:"max_attempts,omitempty"`
+		Questions     []struct {
+			Slug          string   `json:"slug"`
+			Type          string   `json:"type"`
+			Title         string   `json:"title"`
+			Options       []string `json:"options"`
+			CorrectAnswer int      `json:"correct_answer"`
+			CorrectText   string   `json:"correct_text"`
+			Order         int      `json:"order"`
+		} `json:"questions,omitempty"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	update := bson.M{}
+	if req.Title != nil {
+		update["title"] = *req.Title
+	}
+	if req.PassThreshold != nil {
+		update["pass_threshold"] = *req.PassThreshold
+	}
+	if req.MaxAttempts != nil {
+		update["max_attempts"] = *req.MaxAttempts
+	}
+	if req.Questions != nil {
+		var questions []*pkgmodels.LMSQuizQuestion
+		for _, q := range req.Questions {
+			questions = append(questions, &pkgmodels.LMSQuizQuestion{
+				Slug:          q.Slug,
+				Type:          q.Type,
+				Title:         q.Title,
+				Options:       q.Options,
+				CorrectAnswer: q.CorrectAnswer,
+				CorrectText:   q.CorrectText,
+				Order:         q.Order,
+			})
+		}
+		update["questions"] = questions
+	}
+
+	update["timestamps.updated_at"] = time.Now()
+	err = db.GetCollection(pkgmodels.LMSQuizCollection).Update(
+		bson.M{"_id": quiz.Id},
+		bson.M{"$set": update},
+	)
+	if err != nil {
+		log.Printf("[LMS] Error updating quiz: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update quiz"})
+		return
+	}
+
+	updatedQuiz, _ := queries.GetLMSQuizByPublicId(tenantID, quizId)
+	c.JSON(http.StatusOK, updatedQuiz)
+}
+
+func handleDeleteQuiz(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	quizId := c.Param("quizId")
+	quiz, err := queries.GetLMSQuizByPublicId(tenantID, quizId)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "quiz not found"})
+		return
+	}
+
+	now := time.Now()
+	db.GetCollection(pkgmodels.LMSQuizCollection).Update(
+		bson.M{"_id": quiz.Id},
+		bson.M{"$set": bson.M{"timestamps.deleted_at": now}},
+	)
+
+	c.JSON(http.StatusOK, gin.H{"status": "deleted"})
+}
+
+// ---------- Patch Application Helpers ----------
+
+// applyPatchOperation applies a single patch operation to a course product.
+func applyPatchOperation(product *pkgmodels.Product, op pkgmodels.PatchOperation) {
+	switch op.Op {
+	case "replace":
+		applyReplace(product, op.Path, op.Value)
+	case "add":
+		applyAdd(product, op.Path, op.Value)
+	case "remove":
+		applyRemove(product, op.Path)
+	}
+}
+
+func applyReplace(product *pkgmodels.Product, path string, value interface{}) {
+	switch path {
+	case "/title", "/name":
+		if v, ok := value.(string); ok {
+			product.Name = v
+		}
+	case "/description":
+		if v, ok := value.(string); ok {
+			product.Description = v
+		}
+	case "/instructor_name":
+		if v, ok := value.(string); ok {
+			product.InstructorName = v
+		}
+	default:
+		for _, mod := range product.CourseModules {
+			if path == "/module/"+mod.Slug+"/title" {
+				if v, ok := value.(string); ok {
+					mod.Title = v
+				}
+				return
+			}
+			for _, lesson := range mod.Lessons {
+				prefix := "/module/" + mod.Slug + "/lesson/" + lesson.Slug
+				switch path {
+				case prefix + "/title":
+					if v, ok := value.(string); ok {
+						lesson.Title = v
+					}
+					return
+				case prefix + "/contentMarkdown", prefix + "/content_markdown":
+					if v, ok := value.(string); ok {
+						lesson.ContentMarkdown = v
+					}
+					return
+				case prefix + "/contentHtml", prefix + "/content_html":
+					if v, ok := value.(string); ok {
+						lesson.ContentHTML = v
+					}
+					return
+				case prefix + "/videoMode", prefix + "/video_mode":
+					if v, ok := value.(string); ok {
+						lesson.VideoMode = pkgmodels.VideoMode(v)
+					}
+					return
+				case prefix + "/videoStubScript", prefix + "/video_stub_script":
+					if v, ok := value.(string); ok {
+						lesson.VideoStubScript = v
+					}
+					return
+				case prefix + "/videoStubDescription", prefix + "/video_stub_description":
+					if v, ok := value.(string); ok {
+						lesson.VideoStubDescription = v
+					}
+					return
+				}
+			}
+		}
+	}
+}
+
+func applyAdd(_ *pkgmodels.Product, _ string, _ interface{}) {
+	// Stub for adding modules/lessons — full implementation requires deserialization of child data
+}
+
+func applyRemove(_ *pkgmodels.Product, _ string) {
+	// Stub for removing modules/lessons by path
 }
