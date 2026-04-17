@@ -651,3 +651,223 @@ func UpdateLessonContentField(productID bson.ObjectId, moduleIdx, lessonIdx int,
 	}
 	return err
 }
+
+// ---------- GenerationJob CRUD ----------
+
+func CreateGenerationJob(job *pkgmodels.GenerationJob) (*pkgmodels.GenerationJob, error) {
+	job.SetCreated()
+	err := db.GetCollection(pkgmodels.GenerationJobCollection).Insert(job)
+	if err != nil {
+		log.Println("CreateGenerationJob error:", err)
+		return nil, err
+	}
+	return job, nil
+}
+
+func GetGenerationJobByPublicId(tenantID bson.ObjectId, publicId string) (*pkgmodels.GenerationJob, error) {
+	result := pkgmodels.GenerationJob{}
+	query := bson.M{
+		"tenant_id":             tenantID,
+		"public_id":             publicId,
+		"timestamps.deleted_at": nil,
+	}
+	err := db.GetCollection(pkgmodels.GenerationJobCollection).Find(query).One(&result)
+	if err != nil {
+		log.Println("GetGenerationJobByPublicId error:", err)
+		return nil, err
+	}
+	return &result, nil
+}
+
+func ListGenerationJobs(tenantID bson.ObjectId, productPublicId string, skip, limit int) ([]*pkgmodels.GenerationJob, error) {
+	result := []*pkgmodels.GenerationJob{}
+	query := bson.M{
+		"tenant_id":             tenantID,
+		"timestamps.deleted_at": nil,
+	}
+	if productPublicId != "" {
+		query["product_public_id"] = productPublicId
+	}
+	q := db.GetCollection(pkgmodels.GenerationJobCollection).Find(query).Sort("-timestamps.created_at")
+	if skip > 0 {
+		q = q.Skip(skip)
+	}
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+	err := q.All(&result)
+	if err != nil {
+		log.Println("ListGenerationJobs error:", err)
+		return nil, err
+	}
+	return result, nil
+}
+
+func UpdateGenerationJob(tenantID bson.ObjectId, publicId string, update bson.M) (*pkgmodels.GenerationJob, error) {
+	query := bson.M{
+		"tenant_id":             tenantID,
+		"public_id":             publicId,
+		"timestamps.deleted_at": nil,
+	}
+	update["timestamps.updated_at"] = time.Now()
+	err := db.GetCollection(pkgmodels.GenerationJobCollection).Update(query, bson.M{"$set": update})
+	if err != nil {
+		log.Println("UpdateGenerationJob error:", err)
+		return nil, err
+	}
+	return GetGenerationJobByPublicId(tenantID, publicId)
+}
+
+// ---------- ContentPatch CRUD ----------
+
+func CreateContentPatch(patch *pkgmodels.ContentPatch) (*pkgmodels.ContentPatch, error) {
+	patch.SetCreated()
+	err := db.GetCollection(pkgmodels.ContentPatchCollection).Insert(patch)
+	if err != nil {
+		log.Println("CreateContentPatch error:", err)
+		return nil, err
+	}
+	return patch, nil
+}
+
+func GetContentPatchByPublicId(tenantID bson.ObjectId, publicId string) (*pkgmodels.ContentPatch, error) {
+	result := pkgmodels.ContentPatch{}
+	query := bson.M{
+		"tenant_id":             tenantID,
+		"public_id":             publicId,
+		"timestamps.deleted_at": nil,
+	}
+	err := db.GetCollection(pkgmodels.ContentPatchCollection).Find(query).One(&result)
+	if err != nil {
+		log.Println("GetContentPatchByPublicId error:", err)
+		return nil, err
+	}
+	return &result, nil
+}
+
+func ListContentPatches(tenantID bson.ObjectId, productPublicId string, status string, skip, limit int) ([]*pkgmodels.ContentPatch, error) {
+	result := []*pkgmodels.ContentPatch{}
+	query := bson.M{
+		"tenant_id":             tenantID,
+		"product_public_id":     productPublicId,
+		"timestamps.deleted_at": nil,
+	}
+	if status != "" {
+		query["status"] = status
+	}
+	q := db.GetCollection(pkgmodels.ContentPatchCollection).Find(query).Sort("-timestamps.created_at")
+	if skip > 0 {
+		q = q.Skip(skip)
+	}
+	if limit > 0 {
+		q = q.Limit(limit)
+	}
+	err := q.All(&result)
+	if err != nil {
+		log.Println("ListContentPatches error:", err)
+		return nil, err
+	}
+	return result, nil
+}
+
+func UpdateContentPatch(tenantID bson.ObjectId, publicId string, update bson.M) (*pkgmodels.ContentPatch, error) {
+	query := bson.M{
+		"tenant_id":             tenantID,
+		"public_id":             publicId,
+		"timestamps.deleted_at": nil,
+	}
+	update["timestamps.updated_at"] = time.Now()
+	err := db.GetCollection(pkgmodels.ContentPatchCollection).Update(query, bson.M{"$set": update})
+	if err != nil {
+		log.Println("UpdateContentPatch error:", err)
+		return nil, err
+	}
+	return GetContentPatchByPublicId(tenantID, publicId)
+}
+
+// ---------- SourceReference CRUD ----------
+
+func CreateSourceReference(ref *pkgmodels.SourceReference) (*pkgmodels.SourceReference, error) {
+	ref.SetCreated()
+	err := db.GetCollection(pkgmodels.SourceReferenceCollection).Insert(ref)
+	if err != nil {
+		log.Println("CreateSourceReference error:", err)
+		return nil, err
+	}
+	return ref, nil
+}
+
+func ListSourceReferences(tenantID, productID bson.ObjectId) ([]*pkgmodels.SourceReference, error) {
+	result := []*pkgmodels.SourceReference{}
+	err := db.GetCollection(pkgmodels.SourceReferenceCollection).Find(bson.M{
+		"tenant_id":             tenantID,
+		"product_id":            productID,
+		"timestamps.deleted_at": nil,
+	}).Sort("-timestamps.created_at").All(&result)
+	if err != nil {
+		log.Println("ListSourceReferences error:", err)
+		return nil, err
+	}
+	return result, nil
+}
+
+func DeleteSourceReference(tenantID bson.ObjectId, publicId string) error {
+	query := bson.M{
+		"tenant_id":             tenantID,
+		"public_id":             publicId,
+		"timestamps.deleted_at": nil,
+	}
+	err := db.GetCollection(pkgmodels.SourceReferenceCollection).Update(query, bson.M{
+		"$set": bson.M{"timestamps.deleted_at": time.Now()},
+	})
+	if err != nil {
+		log.Println("DeleteSourceReference error:", err)
+	}
+	return err
+}
+
+// ---------- CertificateTemplate CRUD ----------
+
+func CreateCertificateTemplate(tmpl *pkgmodels.CertificateTemplate) (*pkgmodels.CertificateTemplate, error) {
+	tmpl.SetCreated()
+	err := db.GetCollection(pkgmodels.CertificateTemplateCollection).Insert(tmpl)
+	if err != nil {
+		log.Println("CreateCertificateTemplate error:", err)
+		return nil, err
+	}
+	return tmpl, nil
+}
+
+func GetCertificateTemplateByProduct(tenantID, productID bson.ObjectId) (*pkgmodels.CertificateTemplate, error) {
+	result := pkgmodels.CertificateTemplate{}
+	err := db.GetCollection(pkgmodels.CertificateTemplateCollection).Find(bson.M{
+		"tenant_id":             tenantID,
+		"product_id":            productID,
+		"timestamps.deleted_at": nil,
+	}).One(&result)
+	if err != nil {
+		log.Println("GetCertificateTemplateByProduct error:", err)
+		return nil, err
+	}
+	return &result, nil
+}
+
+func UpdateCertificateTemplate(tenantID bson.ObjectId, publicId string, update bson.M) (*pkgmodels.CertificateTemplate, error) {
+	query := bson.M{
+		"tenant_id":             tenantID,
+		"public_id":             publicId,
+		"timestamps.deleted_at": nil,
+	}
+	update["timestamps.updated_at"] = time.Now()
+	err := db.GetCollection(pkgmodels.CertificateTemplateCollection).Update(query, bson.M{"$set": update})
+	if err != nil {
+		log.Println("UpdateCertificateTemplate error:", err)
+		return nil, err
+	}
+	result := pkgmodels.CertificateTemplate{}
+	err = db.GetCollection(pkgmodels.CertificateTemplateCollection).Find(bson.M{
+		"tenant_id": tenantID,
+		"public_id": publicId,
+	}).One(&result)
+	return &result, err
+}

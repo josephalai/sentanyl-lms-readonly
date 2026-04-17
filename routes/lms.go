@@ -45,6 +45,28 @@ func RegisterLMSRoutes(tenant *gin.RouterGroup) {
 		lms.GET("/certificates", handleListLMSCertificates)
 		lms.GET("/certificates/:certId", handleGetLMSCertificate)
 		lms.POST("/certificates/:certId/regenerate", handleRegenerateCertificate)
+
+		// Generation Jobs
+		lms.POST("/courses/:courseId/generate-outline", handleGenerateOutline)
+		lms.POST("/courses/:courseId/generate-full", handleGenerateFullCourse)
+		lms.POST("/courses/:courseId/edit-prompt", handleEditCoursePrompt)
+		lms.GET("/courses/:courseId/generation-jobs", handleListGenerationJobs)
+		lms.GET("/generation-jobs/:jobId", handleGetGenerationJob)
+
+		// Content Patches
+		lms.GET("/courses/:courseId/patches", handleListPatches)
+		lms.GET("/patches/:patchId", handleGetPatch)
+		lms.POST("/patches/:patchId/approve", handleApprovePatch)
+		lms.POST("/patches/:patchId/reject", handleRejectPatch)
+
+		// Source References
+		lms.POST("/courses/:courseId/references", handleUploadReference)
+		lms.GET("/courses/:courseId/references", handleListReferences)
+		lms.DELETE("/references/:refId", handleDeleteReference)
+
+		// Certificate Templates
+		lms.GET("/courses/:courseId/certificate-template", handleGetCertificateTemplate)
+		lms.PUT("/courses/:courseId/certificate-template", handleUpdateCertificateTemplate)
 	}
 }
 
@@ -1068,4 +1090,499 @@ func handleRegenerateCertificate(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "regeneration queued"})
+}
+
+const referenceChunkSize = 2000
+
+// ---------- Generation Handlers ----------
+
+func handleGenerateOutline(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	courseId := c.Param("courseId")
+	var req struct {
+		Prompt       string   `json:"prompt"`
+		Audience     string   `json:"audience"`
+		Outcome      string   `json:"outcome"`
+		Tone         string   `json:"tone"`
+		ModuleCount  int      `json:"module_count"`
+		Quizzes      bool     `json:"quizzes_enabled"`
+		Certificate  bool     `json:"cert_enabled"`
+		DefaultMedia string   `json:"default_media"`
+		ExtraContext string   `json:"extra_context"`
+		ReferenceIds []string `json:"reference_ids"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	job := pkgmodels.NewGenerationJob(tenantID, "", "create")
+	job.ProductPublicId = courseId
+	job.Prompt = req.Prompt
+	job.Audience = req.Audience
+	job.Outcome = req.Outcome
+	job.Tone = req.Tone
+	job.ModuleCount = req.ModuleCount
+	job.QuizzesEnabled = req.Quizzes
+	job.CertEnabled = req.Certificate
+	job.DefaultMedia = req.DefaultMedia
+	job.ExtraContext = req.ExtraContext
+	job.ReferenceIds = req.ReferenceIds
+	job.Status = pkgmodels.GenStatusGeneratingOutline
+	now := time.Now()
+	job.StartedAt = &now
+
+	created, err := queries.CreateGenerationJob(job)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create generation job"})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"job_id":  created.PublicId,
+		"status":  string(created.Status),
+		"message": "Outline generation job created",
+	})
+}
+
+func handleGenerateFullCourse(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	courseId := c.Param("courseId")
+	var req struct {
+		JobId       string `json:"job_id"`
+		OutlineJSON string `json:"outline_json"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if req.JobId != "" {
+		_, err := queries.UpdateGenerationJob(tenantID, req.JobId, bson.M{
+			"status":       string(pkgmodels.GenStatusGeneratingTree),
+			"outline_json": req.OutlineJSON,
+		})
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update generation job"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{
+			"job_id":  req.JobId,
+			"status":  string(pkgmodels.GenStatusGeneratingTree),
+			"message": "Full course generation started",
+		})
+		return
+	}
+
+	job := pkgmodels.NewGenerationJob(tenantID, "", "create")
+	job.ProductPublicId = courseId
+	job.OutlineJSON = req.OutlineJSON
+	job.Status = pkgmodels.GenStatusGeneratingTree
+	now := time.Now()
+	job.StartedAt = &now
+
+	created, err := queries.CreateGenerationJob(job)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create generation job"})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"job_id":  created.PublicId,
+		"status":  string(created.Status),
+		"message": "Full course generation started",
+	})
+}
+
+func handleEditCoursePrompt(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	courseId := c.Param("courseId")
+	var req struct {
+		Prompt     string `json:"prompt" binding:"required"`
+		TargetType string `json:"target_type"`
+		TargetId   string `json:"target_id"`
+		Scope      string `json:"scope"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	targetType := req.TargetType
+	if targetType == "" {
+		targetType = "course"
+	}
+	targetId := req.TargetId
+	if targetId == "" {
+		targetId = courseId
+	}
+
+	patch := pkgmodels.NewContentPatch(tenantID, "", courseId, targetType, targetId)
+	patch.Prompt = req.Prompt
+
+	patch.Operations = []pkgmodels.PatchOperation{
+		{
+			Op:    "replace",
+			Path:  "/" + targetType + "/" + targetId,
+			Value: "LLM-generated content pending",
+		},
+	}
+
+	created, err := queries.CreateContentPatch(patch)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create edit patch"})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"patch_id":   created.PublicId,
+		"status":     created.Status,
+		"operations": created.Operations,
+		"message":    "Edit patch created for review",
+	})
+}
+
+func handleListGenerationJobs(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	courseId := c.Param("courseId")
+	skip, _ := strconv.Atoi(c.DefaultQuery("skip", "0"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+
+	jobs, err := queries.ListGenerationJobs(tenantID, courseId, skip, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list generation jobs"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"jobs": jobs})
+}
+
+func handleGetGenerationJob(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	jobId := c.Param("jobId")
+	job, err := queries.GetGenerationJobByPublicId(tenantID, jobId)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "job not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, job)
+}
+
+// ---------- Patch Handlers ----------
+
+func handleListPatches(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	courseId := c.Param("courseId")
+	status := c.DefaultQuery("status", "")
+	skip, _ := strconv.Atoi(c.DefaultQuery("skip", "0"))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+
+	patches, err := queries.ListContentPatches(tenantID, courseId, status, skip, limit)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list patches"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"patches": patches})
+}
+
+func handleGetPatch(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	patchId := c.Param("patchId")
+	patch, err := queries.GetContentPatchByPublicId(tenantID, patchId)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "patch not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, patch)
+}
+
+func handleApprovePatch(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	patchId := c.Param("patchId")
+	now := time.Now()
+	updated, err := queries.UpdateContentPatch(tenantID, patchId, bson.M{
+		"status":     "approved",
+		"applied_at": now,
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to approve patch"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"patch_id": updated.PublicId,
+		"status":   updated.Status,
+		"message":  "Patch approved and applied",
+	})
+}
+
+func handleRejectPatch(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	patchId := c.Param("patchId")
+	updated, err := queries.UpdateContentPatch(tenantID, patchId, bson.M{
+		"status": "rejected",
+	})
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to reject patch"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"patch_id": updated.PublicId,
+		"status":   updated.Status,
+		"message":  "Patch rejected",
+	})
+}
+
+// ---------- Reference Handlers ----------
+
+func handleUploadReference(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	courseId := c.Param("courseId")
+	product, err := queries.GetCourseProductByPublicId(tenantID, courseId)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "course not found"})
+		return
+	}
+
+	var req struct {
+		FileName string `json:"file_name" binding:"required"`
+		FileType string `json:"file_type" binding:"required"`
+		Content  string `json:"content" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	ref := pkgmodels.NewSourceReference(tenantID, product.Id, "", req.FileName, req.FileType)
+	ref.OriginalSize = int64(len(req.Content))
+	ref.ExtractedText = req.Content
+
+	chunkSize := referenceChunkSize
+	text := req.Content
+	for i := 0; i < len(text); i += chunkSize {
+		end := i + chunkSize
+		if end > len(text) {
+			end = len(text)
+		}
+		ref.Chunks = append(ref.Chunks, pkgmodels.TextChunk{
+			Index: len(ref.Chunks),
+			Text:  text[i:end],
+			Start: i,
+			End:   end,
+		})
+	}
+
+	created, err := queries.CreateSourceReference(ref)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create reference"})
+		return
+	}
+
+	c.JSON(http.StatusCreated, gin.H{
+		"reference_id": created.PublicId,
+		"file_name":    created.FileName,
+		"file_type":    created.FileType,
+		"chunks":       len(created.Chunks),
+		"message":      "Reference uploaded and processed",
+	})
+}
+
+func handleListReferences(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	courseId := c.Param("courseId")
+	product, err := queries.GetCourseProductByPublicId(tenantID, courseId)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "course not found"})
+		return
+	}
+
+	refs, err := queries.ListSourceReferences(tenantID, product.Id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list references"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"references": refs})
+}
+
+func handleDeleteReference(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	refId := c.Param("refId")
+	err := queries.DeleteSourceReference(tenantID, refId)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete reference"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": "Reference deleted"})
+}
+
+// ---------- Certificate Template Handlers ----------
+
+func handleGetCertificateTemplate(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	courseId := c.Param("courseId")
+	product, err := queries.GetCourseProductByPublicId(tenantID, courseId)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "course not found"})
+		return
+	}
+
+	tmpl, err := queries.GetCertificateTemplateByProduct(tenantID, product.Id)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{
+			"enabled":       false,
+			"template_name": "default",
+			"title":         product.Name + " Certificate",
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, tmpl)
+}
+
+func handleUpdateCertificateTemplate(c *gin.Context) {
+	tenantID := auth.GetTenantObjectID(c)
+	if tenantID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	courseId := c.Param("courseId")
+	product, err := queries.GetCourseProductByPublicId(tenantID, courseId)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "course not found"})
+		return
+	}
+
+	var req struct {
+		Enabled      *bool  `json:"enabled"`
+		TemplateName string `json:"template_name"`
+		Title        string `json:"title"`
+		LogoURL      string `json:"logo_url"`
+		AccentColor  string `json:"accent_color"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	existing, err := queries.GetCertificateTemplateByProduct(tenantID, product.Id)
+	if err != nil {
+		tmpl := pkgmodels.NewCertificateTemplate(tenantID, product.Id, "", product.PublicId, product.Name+" Certificate")
+		if req.Enabled != nil {
+			tmpl.Enabled = *req.Enabled
+		}
+		if req.TemplateName != "" {
+			tmpl.TemplateName = req.TemplateName
+		}
+		if req.Title != "" {
+			tmpl.Title = req.Title
+		}
+		tmpl.LogoURL = req.LogoURL
+		tmpl.AccentColor = req.AccentColor
+
+		created, err := queries.CreateCertificateTemplate(tmpl)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create certificate template"})
+			return
+		}
+		c.JSON(http.StatusCreated, created)
+		return
+	}
+
+	update := bson.M{}
+	if req.Enabled != nil {
+		update["enabled"] = *req.Enabled
+	}
+	if req.TemplateName != "" {
+		update["template_name"] = req.TemplateName
+	}
+	if req.Title != "" {
+		update["title"] = req.Title
+	}
+	if req.LogoURL != "" {
+		update["logo_url"] = req.LogoURL
+	}
+	if req.AccentColor != "" {
+		update["accent_color"] = req.AccentColor
+	}
+
+	updated, err := queries.UpdateCertificateTemplate(tenantID, existing.PublicId, update)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update certificate template"})
+		return
+	}
+
+	c.JSON(http.StatusOK, updated)
 }
