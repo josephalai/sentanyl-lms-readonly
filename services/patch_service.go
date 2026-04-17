@@ -3,6 +3,7 @@ package services
 import (
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"gopkg.in/mgo.v2/bson"
@@ -41,15 +42,53 @@ func (s *PatchService) CreateEditPatch(
 	patch := pkgmodels.NewContentPatch(tenantID, "", productPublicId, targetType, targetId)
 	patch.Prompt = prompt
 
+	// Build patch operations with proper paths that match the applyOperation tree.
 	// In production, this would be LLM-generated structured operations.
-	// For now, create a meaningful placeholder operation based on the target.
-	patch.Operations = []pkgmodels.PatchOperation{
-		{
+	var ops []pkgmodels.PatchOperation
+
+	switch targetType {
+	case "course":
+		// Course-level edits target /title and /description
+		ops = append(ops, pkgmodels.PatchOperation{
 			Op:    "replace",
-			Path:  fmt.Sprintf("/%s/%s", targetType, targetId),
+			Path:  "/description",
+			Value: fmt.Sprintf("Updated description based on: %s", prompt),
+		})
+	case "module":
+		// Module-level edits target /module/<slug>/title
+		ops = append(ops, pkgmodels.PatchOperation{
+			Op:    "replace",
+			Path:  fmt.Sprintf("/module/%s/title", targetId),
+			Value: fmt.Sprintf("Updated module title based on: %s", prompt),
+		})
+	case "lesson":
+		// Lesson-level edits — targetId may be "moduleSlug/lessonSlug" or just "lessonSlug".
+		// Build path: /module/<moduleSlug>/lesson/<lessonSlug>/content_markdown
+		parts := strings.SplitN(targetId, "/", 2)
+		if len(parts) == 2 {
+			ops = append(ops, pkgmodels.PatchOperation{
+				Op:    "replace",
+				Path:  fmt.Sprintf("/module/%s/lesson/%s/content_markdown", parts[0], parts[1]),
+				Value: fmt.Sprintf("Updated lesson content based on: %s", prompt),
+			})
+		} else {
+			// Single slug — use /description fallback since we can't determine the module
+			ops = append(ops, pkgmodels.PatchOperation{
+				Op:    "replace",
+				Path:  "/description",
+				Value: fmt.Sprintf("Updated lesson content based on: %s", prompt),
+			})
+		}
+	default:
+		// Generic fallback
+		ops = append(ops, pkgmodels.PatchOperation{
+			Op:    "replace",
+			Path:  "/description",
 			Value: fmt.Sprintf("Updated content based on: %s", prompt),
-		},
+		})
 	}
+
+	patch.Operations = ops
 
 	created, err := queries.CreateContentPatch(patch)
 	if err != nil {

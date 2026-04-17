@@ -1229,38 +1229,57 @@ func handleGenerateFullCourse(c *gin.Context) {
 		JobId          string `json:"job_id"`
 		OutlineJSON    string `json:"outline_json"`
 		DefaultMedia   string `json:"default_media"`
-		QuizzesEnabled bool   `json:"quizzes_enabled"`
-		CertEnabled    bool   `json:"cert_enabled"`
+		QuizzesEnabled *bool  `json:"quizzes_enabled"`
+		CertEnabled    *bool  `json:"cert_enabled"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Parse the outline
-	var outline services.CourseOutline
+	// Derive final config values — start with request values
+	finalOutlineJSON := req.OutlineJSON
+	finalDefaultMedia := req.DefaultMedia
+	finalQuizzesEnabled := false
+	finalCertEnabled := false
+	if req.QuizzesEnabled != nil {
+		finalQuizzesEnabled = *req.QuizzesEnabled
+	}
+	if req.CertEnabled != nil {
+		finalCertEnabled = *req.CertEnabled
+	}
 
-	// If a job ID was provided, fetch outline from the existing job
-	if req.JobId != "" && req.OutlineJSON == "" {
+	// If a job ID was provided, always fetch the existing job to preserve config
+	if req.JobId != "" {
 		existingJob, err := queries.GetGenerationJobByPublicId(tenantID, req.JobId)
 		if err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "generation job not found"})
 			return
 		}
-		req.OutlineJSON = existingJob.OutlineJSON
-		if req.DefaultMedia == "" {
-			req.DefaultMedia = existingJob.DefaultMedia
+		// Use existing outline if request didn't provide one
+		if finalOutlineJSON == "" {
+			finalOutlineJSON = existingJob.OutlineJSON
 		}
-		req.QuizzesEnabled = existingJob.QuizzesEnabled
-		req.CertEnabled = existingJob.CertEnabled
+		// Preserve existing config when request didn't explicitly set values
+		if finalDefaultMedia == "" {
+			finalDefaultMedia = existingJob.DefaultMedia
+		}
+		if req.QuizzesEnabled == nil {
+			finalQuizzesEnabled = existingJob.QuizzesEnabled
+		}
+		if req.CertEnabled == nil {
+			finalCertEnabled = existingJob.CertEnabled
+		}
 	}
 
-	if req.OutlineJSON == "" {
+	if finalOutlineJSON == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "outline_json is required (either directly or via job_id)"})
 		return
 	}
 
-	if err := json.Unmarshal([]byte(req.OutlineJSON), &outline); err != nil {
+	// Parse the outline
+	var outline services.CourseOutline
+	if err := json.Unmarshal([]byte(finalOutlineJSON), &outline); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid outline JSON: " + err.Error()})
 		return
 	}
@@ -1272,9 +1291,9 @@ func handleGenerateFullCourse(c *gin.Context) {
 		courseId,
 		req.JobId,
 		outline,
-		req.DefaultMedia,
-		req.QuizzesEnabled,
-		req.CertEnabled,
+		finalDefaultMedia,
+		finalQuizzesEnabled,
+		finalCertEnabled,
 	)
 	if err != nil {
 		log.Printf("[LMS] Error materializing course: %v", err)
