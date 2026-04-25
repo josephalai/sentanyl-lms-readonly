@@ -145,10 +145,16 @@ func handleCreateCourse(c *gin.Context) {
 	}
 
 	var req struct {
-		Title          string `json:"title" binding:"required"`
-		Description    string `json:"description"`
-		InstructorName string `json:"instructor_name"`
-		Thumbnail      string `json:"thumbnail"`
+		Title              string     `json:"title" binding:"required"`
+		Description        string     `json:"description"`
+		InstructorName     string     `json:"instructor_name"`
+		Thumbnail          string     `json:"thumbnail"`
+		CertificateEnabled *bool      `json:"certificate_enabled"`
+		CertificateTemplate string    `json:"certificate_template"`
+		SequentialGating   bool       `json:"sequential_gating"`
+		RequireQuizPass    bool       `json:"require_quiz_pass"`
+		DripAnchor         string     `json:"drip_anchor"`
+		DripAnchorDate     *time.Time `json:"drip_anchor_date"`
 		Modules        []struct {
 			Slug     string `json:"slug" binding:"required"`
 			Title    string `json:"title" binding:"required"`
@@ -170,6 +176,10 @@ func handleCreateCourse(c *gin.Context) {
 				DripDays             int                    `json:"drip_days"`
 				DripHours            int                    `json:"drip_hours"`
 				DripMinutes          int                    `json:"drip_minutes"`
+				LiveStartsAt         *time.Time             `json:"live_starts_at,omitempty"`
+				LiveEndsAt           *time.Time             `json:"live_ends_at,omitempty"`
+				BadgeRules           []*pkgmodels.MediaBadgeRule `json:"badge_rules,omitempty"`
+				Translations         map[string]*pkgmodels.LessonTranslation `json:"translations,omitempty"`
 				VideoMode            string                 `json:"video_mode"`
 				VideoStubScript      string                 `json:"video_stub_script"`
 				VideoStubDescription string                 `json:"video_stub_description"`
@@ -185,15 +195,21 @@ func handleCreateCourse(c *gin.Context) {
 	}
 
 	product := &pkgmodels.Product{
-		Id:             bson.NewObjectId(),
-		PublicId:       utils.GeneratePublicId(),
-		TenantID:       tenantID,
-		Name:           req.Title,
-		Description:    req.Description,
-		ProductType:    "course",
-		InstructorName: req.InstructorName,
-		ThumbnailURL:   req.Thumbnail,
-		Status:         "draft",
+		Id:                  bson.NewObjectId(),
+		PublicId:            utils.GeneratePublicId(),
+		TenantID:            tenantID,
+		Name:                req.Title,
+		Description:         req.Description,
+		ProductType:         "course",
+		InstructorName:      req.InstructorName,
+		ThumbnailURL:        req.Thumbnail,
+		Status:              "draft",
+		CertificateEnabled:  req.CertificateEnabled,
+		CertificateTemplate: req.CertificateTemplate,
+		SequentialGating:    req.SequentialGating,
+		RequireQuizPass:     req.RequireQuizPass,
+		DripAnchor:          req.DripAnchor,
+		DripAnchorDate:      req.DripAnchorDate,
 	}
 
 	totalLessons := 0
@@ -314,11 +330,17 @@ func handleUpdateCourse(c *gin.Context) {
 	}
 
 	var req struct {
-		Title          *string `json:"title,omitempty"`
-		Description    *string `json:"description,omitempty"`
-		InstructorName *string `json:"instructor_name,omitempty"`
-		Thumbnail      *string `json:"thumbnail,omitempty"`
-		Status         *string `json:"status,omitempty"`
+		Title              *string    `json:"title,omitempty"`
+		Description        *string    `json:"description,omitempty"`
+		InstructorName     *string    `json:"instructor_name,omitempty"`
+		Thumbnail          *string    `json:"thumbnail,omitempty"`
+		Status             *string    `json:"status,omitempty"`
+		CertificateEnabled *bool      `json:"certificate_enabled,omitempty"`
+		CertificateTemplate *string   `json:"certificate_template,omitempty"`
+		SequentialGating   *bool      `json:"sequential_gating,omitempty"`
+		RequireQuizPass    *bool      `json:"require_quiz_pass,omitempty"`
+		DripAnchor         *string    `json:"drip_anchor,omitempty"`
+		DripAnchorDate     *time.Time `json:"drip_anchor_date,omitempty"`
 		Modules        []struct {
 			Slug     string `json:"slug"`
 			Title    string `json:"title"`
@@ -340,6 +362,10 @@ func handleUpdateCourse(c *gin.Context) {
 				DripDays             int                    `json:"drip_days"`
 				DripHours            int                    `json:"drip_hours"`
 				DripMinutes          int                    `json:"drip_minutes"`
+				LiveStartsAt         *time.Time             `json:"live_starts_at,omitempty"`
+				LiveEndsAt           *time.Time             `json:"live_ends_at,omitempty"`
+				BadgeRules           []*pkgmodels.MediaBadgeRule `json:"badge_rules,omitempty"`
+				Translations         map[string]*pkgmodels.LessonTranslation `json:"translations,omitempty"`
 				VideoMode            string                 `json:"video_mode"`
 				VideoStubScript      string                 `json:"video_stub_script"`
 				VideoStubDescription string                 `json:"video_stub_description"`
@@ -370,6 +396,24 @@ func handleUpdateCourse(c *gin.Context) {
 	if req.Status != nil {
 		update["status"] = *req.Status
 	}
+	if req.CertificateEnabled != nil {
+		update["certificate_enabled"] = *req.CertificateEnabled
+	}
+	if req.CertificateTemplate != nil {
+		update["certificate_template"] = *req.CertificateTemplate
+	}
+	if req.SequentialGating != nil {
+		update["sequential_gating"] = *req.SequentialGating
+	}
+	if req.RequireQuizPass != nil {
+		update["require_quiz_pass"] = *req.RequireQuizPass
+	}
+	if req.DripAnchor != nil {
+		update["drip_anchor"] = *req.DripAnchor
+	}
+	if req.DripAnchorDate != nil {
+		update["drip_anchor_date"] = req.DripAnchorDate
+	}
 
 	var builtModules []*pkgmodels.CourseModule
 	if req.Modules != nil {
@@ -397,6 +441,10 @@ func handleUpdateCourse(c *gin.Context) {
 					DripDays:             l.DripDays,
 					DripHours:            l.DripHours,
 					DripMinutes:          l.DripMinutes,
+					LiveStartsAt:         l.LiveStartsAt,
+					LiveEndsAt:           l.LiveEndsAt,
+					BadgeRules:           l.BadgeRules,
+					Translations:         l.Translations,
 					VideoMode:            pkgmodels.VideoMode(l.VideoMode),
 					VideoStubScript:      l.VideoStubScript,
 					VideoStubDescription: l.VideoStubDescription,
