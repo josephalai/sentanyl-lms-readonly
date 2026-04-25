@@ -272,6 +272,16 @@ func applyLessonFieldReplace(lesson *pkgmodels.CourseLesson, field string, value
 			lesson.DripDays = v
 			return nil
 		}
+	case "drip_hours":
+		if v, ok := asInt(value); ok {
+			lesson.DripHours = v
+			return nil
+		}
+	case "drip_minutes":
+		if v, ok := asInt(value); ok {
+			lesson.DripMinutes = v
+			return nil
+		}
 	}
 	return fmt.Errorf("unsupported lesson field %q or invalid value type", field)
 }

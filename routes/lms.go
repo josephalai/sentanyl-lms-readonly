@@ -168,6 +168,8 @@ func handleCreateCourse(c *gin.Context) {
 				IsFree               bool                   `json:"is_free"`
 				IsDraft              bool                   `json:"is_draft"`
 				DripDays             int                    `json:"drip_days"`
+				DripHours            int                    `json:"drip_hours"`
+				DripMinutes          int                    `json:"drip_minutes"`
 				VideoMode            string                 `json:"video_mode"`
 				VideoStubScript      string                 `json:"video_stub_script"`
 				VideoStubDescription string                 `json:"video_stub_description"`
@@ -216,6 +218,8 @@ func handleCreateCourse(c *gin.Context) {
 				IsFree:               l.IsFree,
 				IsDraft:              l.IsDraft,
 				DripDays:             l.DripDays,
+				DripHours:            l.DripHours,
+				DripMinutes:          l.DripMinutes,
 				VideoMode:            pkgmodels.VideoMode(l.VideoMode),
 				VideoStubScript:      l.VideoStubScript,
 				VideoStubDescription: l.VideoStubDescription,
@@ -334,6 +338,8 @@ func handleUpdateCourse(c *gin.Context) {
 				IsFree               bool                   `json:"is_free"`
 				IsDraft              bool                   `json:"is_draft"`
 				DripDays             int                    `json:"drip_days"`
+				DripHours            int                    `json:"drip_hours"`
+				DripMinutes          int                    `json:"drip_minutes"`
 				VideoMode            string                 `json:"video_mode"`
 				VideoStubScript      string                 `json:"video_stub_script"`
 				VideoStubDescription string                 `json:"video_stub_description"`
@@ -389,6 +395,8 @@ func handleUpdateCourse(c *gin.Context) {
 					IsFree:               l.IsFree,
 					IsDraft:              l.IsDraft,
 					DripDays:             l.DripDays,
+					DripHours:            l.DripHours,
+					DripMinutes:          l.DripMinutes,
 					VideoMode:            pkgmodels.VideoMode(l.VideoMode),
 					VideoStubScript:      l.VideoStubScript,
 					VideoStubDescription: l.VideoStubDescription,

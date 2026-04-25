@@ -3,6 +3,8 @@ package routes
 import (
 	"log"
 	"net/http"
+	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gopkg.in/mgo.v2/bson"
@@ -15,6 +17,86 @@ import (
 func RegisterInternalRoutes(internal *gin.RouterGroup) {
 	internal.POST("/hydrate-lms", HandleInternalHydrateCourse)
 	internal.POST("/enroll", HandleInternalEnroll)
+	internal.POST("/certificates", HandleInternalIssueCertificate)
+}
+
+// HandleInternalIssueCertificate idempotently creates a Certificate for a
+// completed enrollment. Called by marketing-service when a contact's overall
+// progress crosses 100%. Idempotent on enrollment_id — re-issuing returns the
+// existing cert.
+type internalIssueCertRequest struct {
+	EnrollmentID string `json:"enrollment_id" binding:"required"`
+	CompletedAt  string `json:"completed_at,omitempty"`
+}
+
+func HandleInternalIssueCertificate(c *gin.Context) {
+	var req internalIssueCertRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if !bson.IsObjectIdHex(req.EnrollmentID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid enrollment_id"})
+		return
+	}
+	enrollmentID := bson.ObjectIdHex(req.EnrollmentID)
+
+	var existing pkgmodels.Certificate
+	if err := db.GetCollection(pkgmodels.CertificateCollection).Find(bson.M{
+		"enrollment_id": enrollmentID,
+	}).One(&existing); err == nil {
+		c.JSON(http.StatusOK, gin.H{"status": "ok", "certificate_id": existing.Id.Hex(), "public_id": existing.PublicId, "created": false})
+		return
+	}
+
+	var enrollment pkgmodels.CourseEnrollment
+	if err := db.GetCollection(pkgmodels.CourseEnrollmentCollection).FindId(enrollmentID).One(&enrollment); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "enrollment not found"})
+		return
+	}
+	var product pkgmodels.Product
+	if err := db.GetCollection(pkgmodels.ProductCollection).FindId(enrollment.ProductID).One(&product); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "product not found"})
+		return
+	}
+	var contact pkgmodels.User
+	contactName := ""
+	if err := db.GetCollection(pkgmodels.UserCollection).FindId(enrollment.ContactID).One(&contact); err == nil {
+		contactName = strings.TrimSpace(strings.TrimSpace(contact.Name.First) + " " + strings.TrimSpace(contact.Name.Last))
+		if contactName == "" {
+			contactName = string(contact.Email)
+		}
+	}
+
+	completedAt := time.Now()
+	if req.CompletedAt != "" {
+		if t, err := time.Parse(time.RFC3339, req.CompletedAt); err == nil {
+			completedAt = t
+		}
+	} else if enrollment.CompletedAt != nil {
+		completedAt = *enrollment.CompletedAt
+	}
+
+	cert := pkgmodels.NewCertificate(
+		enrollment.TenantID,
+		enrollment.ContactID,
+		enrollment.ProductID,
+		enrollment.Id,
+		product.PublicId,
+		contactName,
+		product.Name,
+		"default",
+		completedAt,
+	)
+	cert.GenStatus = "issued"
+	now := time.Now()
+	cert.IssuedAt = &now
+	if err := db.GetCollection(pkgmodels.CertificateCollection).Insert(cert); err != nil {
+		log.Printf("[LMS] Internal certificate error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to issue certificate"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "certificate_id": cert.Id.Hex(), "public_id": cert.PublicId, "created": true})
 }
 
 // HandleInternalHydrateCourse receives a hydrated course payload from the

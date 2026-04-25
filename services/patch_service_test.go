@@ -82,6 +82,8 @@ func TestApplyOperation_ReplaceLessonVideoStubFields(t *testing.T) {
 		{Op: "replace", Path: "/module/m1/lesson/l1/video_stub_description", Value: "desc"},
 		{Op: "replace", Path: "/module/m1/lesson/l1/video_upload_pending", Value: true},
 		{Op: "replace", Path: "/module/m1/lesson/l1/drip_days", Value: 5},
+		{Op: "replace", Path: "/module/m1/lesson/l1/drip_hours", Value: 3},
+		{Op: "replace", Path: "/module/m1/lesson/l1/drip_minutes", Value: 30},
 	}
 	for _, op := range ops {
 		if err := applyOperation(p, op); err != nil {
@@ -103,6 +105,12 @@ func TestApplyOperation_ReplaceLessonVideoStubFields(t *testing.T) {
 	}
 	if l.DripDays != 5 {
 		t.Errorf("DripDays = %d, want 5", l.DripDays)
+	}
+	if l.DripHours != 3 {
+		t.Errorf("DripHours = %d, want 3", l.DripHours)
+	}
+	if l.DripMinutes != 30 {
+		t.Errorf("DripMinutes = %d, want 30", l.DripMinutes)
 	}
 }
 
