@@ -10,6 +10,7 @@ import (
 	"gopkg.in/mgo.v2/bson"
 
 	"github.com/josephalai/sentanyl/pkg/db"
+	"github.com/josephalai/sentanyl/pkg/i18n"
 	pkgmodels "github.com/josephalai/sentanyl/pkg/models"
 )
 
@@ -61,10 +62,25 @@ func HandleInternalIssueCertificate(c *gin.Context) {
 	}
 	var contact pkgmodels.User
 	contactName := ""
+	contactLocale := ""
 	if err := db.GetCollection(pkgmodels.UserCollection).FindId(enrollment.ContactID).One(&contact); err == nil {
 		contactName = strings.TrimSpace(strings.TrimSpace(contact.Name.First) + " " + strings.TrimSpace(contact.Name.Last))
 		if contactName == "" {
 			contactName = string(contact.Email)
+		}
+		contactLocale = i18n.Normalize(contact.PreferredLocale)
+	}
+
+	// Snapshot the localized course title at issue time. The hydrator runs
+	// out of request context so it can't resolve translations later.
+	courseTitle := product.Name
+	if contactLocale != "" && len(product.Translations) > 0 {
+		if t, ok := product.Translations[contactLocale]; ok && t != nil && t.Title != "" {
+			courseTitle = t.Title
+		} else if i := strings.Index(contactLocale, "-"); i > 0 {
+			if t, ok := product.Translations[contactLocale[:i]]; ok && t != nil && t.Title != "" {
+				courseTitle = t.Title
+			}
 		}
 	}
 
@@ -84,11 +100,16 @@ func HandleInternalIssueCertificate(c *gin.Context) {
 		enrollment.Id,
 		product.PublicId,
 		contactName,
-		product.Name,
+		courseTitle,
 		"default",
 		completedAt,
 	)
-	cert.GenStatus = "issued"
+	cert.Locale = contactLocale
+	// "pending" puts the cert in the hydrator's render queue (core-service
+	// processPendingCertificates). It will flip to "completed" once asset_url
+	// is populated. issued_at marks when the cert was officially earned and
+	// is set immediately so the library banner shows even before render.
+	cert.GenStatus = "pending"
 	now := time.Now()
 	cert.IssuedAt = &now
 	if err := db.GetCollection(pkgmodels.CertificateCollection).Insert(cert); err != nil {

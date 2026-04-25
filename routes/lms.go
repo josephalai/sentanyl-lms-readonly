@@ -236,6 +236,10 @@ func handleCreateCourse(c *gin.Context) {
 				DripDays:             l.DripDays,
 				DripHours:            l.DripHours,
 				DripMinutes:          l.DripMinutes,
+				LiveStartsAt:         l.LiveStartsAt,
+				LiveEndsAt:           l.LiveEndsAt,
+				BadgeRules:           l.BadgeRules,
+				Translations:         l.Translations,
 				VideoMode:            pkgmodels.VideoMode(l.VideoMode),
 				VideoStubScript:      l.VideoStubScript,
 				VideoStubDescription: l.VideoStubDescription,
@@ -298,21 +302,31 @@ func handleGetCourse(c *gin.Context) {
 		updated = product.UpdatedAt.Format(time.RFC3339)
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"public_id":          product.PublicId,
-		"title":              product.Name,
-		"description":        product.Description,
-		"instructor_name":    product.InstructorName,
-		"status":             product.Status,
-		"thumbnail":          product.ThumbnailURL,
-		"modules":            product.CourseModules,
-		"total_lessons":      product.TotalLessons,
-		"total_duration_sec": product.TotalDurationSec,
-		"enrollment_count":   product.EnrollmentCount,
-		"completion_count":   product.CompletionCount,
-		"created_at":         created,
-		"updated_at":         updated,
-	})
+	resp := gin.H{
+		"public_id":            product.PublicId,
+		"title":                product.Name,
+		"description":          product.Description,
+		"instructor_name":      product.InstructorName,
+		"status":               product.Status,
+		"thumbnail":            product.ThumbnailURL,
+		"modules":              product.CourseModules,
+		"total_lessons":        product.TotalLessons,
+		"total_duration_sec":   product.TotalDurationSec,
+		"enrollment_count":     product.EnrollmentCount,
+		"completion_count":     product.CompletionCount,
+		"created_at":           created,
+		"updated_at":           updated,
+		"certificate_enabled":  product.CertificateEnabled,
+		"certificate_template": product.CertificateTemplate,
+		"sequential_gating":    product.SequentialGating,
+		"require_quiz_pass":    product.RequireQuizPass,
+		"drip_anchor":          product.DripAnchor,
+		"translations":         product.Translations,
+	}
+	if product.DripAnchorDate != nil {
+		resp["drip_anchor_date"] = product.DripAnchorDate.Format(time.RFC3339)
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 func handleUpdateCourse(c *gin.Context) {
@@ -341,11 +355,13 @@ func handleUpdateCourse(c *gin.Context) {
 		RequireQuizPass    *bool      `json:"require_quiz_pass,omitempty"`
 		DripAnchor         *string    `json:"drip_anchor,omitempty"`
 		DripAnchorDate     *time.Time `json:"drip_anchor_date,omitempty"`
+		Translations       map[string]*pkgmodels.ProductTranslation `json:"translations,omitempty"`
 		Modules        []struct {
-			Slug     string `json:"slug"`
-			Title    string `json:"title"`
-			Order    int    `json:"order"`
-			QuizSlug string `json:"quiz_slug"`
+			Slug         string `json:"slug"`
+			Title        string `json:"title"`
+			Order        int    `json:"order"`
+			QuizSlug     string `json:"quiz_slug"`
+			Translations map[string]*pkgmodels.ModuleTranslation `json:"translations,omitempty"`
 			Lessons  []struct {
 				Slug                 string                 `json:"slug"`
 				Title                string                 `json:"title"`
@@ -414,16 +430,20 @@ func handleUpdateCourse(c *gin.Context) {
 	if req.DripAnchorDate != nil {
 		update["drip_anchor_date"] = req.DripAnchorDate
 	}
+	if req.Translations != nil {
+		update["translations"] = req.Translations
+	}
 
 	var builtModules []*pkgmodels.CourseModule
 	if req.Modules != nil {
 		totalLessons := 0
 		for _, m := range req.Modules {
 			mod := &pkgmodels.CourseModule{
-				Slug:     m.Slug,
-				Title:    m.Title,
-				Order:    m.Order,
-				QuizSlug: m.QuizSlug,
+				Slug:         m.Slug,
+				Title:        m.Title,
+				Order:        m.Order,
+				QuizSlug:     m.QuizSlug,
+				Translations: m.Translations,
 			}
 			for _, l := range m.Lessons {
 				lesson := &pkgmodels.CourseLesson{
