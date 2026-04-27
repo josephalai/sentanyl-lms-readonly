@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -163,7 +164,10 @@ func HandleInternalEnroll(c *gin.Context) {
 	contactID := bson.ObjectIdHex(req.ContactID)
 	productID := bson.ObjectIdHex(req.ProductID)
 
-	// Confirm the product exists and fetch its public id.
+	// Confirm the product exists and fetch its public id + type. Provisioning
+	// branches on ProductType so a single offer can mix course, coaching,
+	// service, and digital_download products without per-product webhook
+	// dispatch in marketing-service.
 	var product pkgmodels.Product
 	err := db.GetCollection(pkgmodels.ProductCollection).Find(bson.M{
 		"_id":                   productID,
@@ -175,25 +179,110 @@ func HandleInternalEnroll(c *gin.Context) {
 		return
 	}
 
-	// Upsert CourseEnrollment keyed on (tenant_id, contact_id, product_id).
+	switch product.ProductType {
+	case pkgmodels.ProductTypeService:
+		enrollServiceProduct(c, tenantID, contactID, &product)
+	case pkgmodels.ProductTypeCoaching:
+		enrollCoachingProduct(c, tenantID, contactID, &product)
+	case pkgmodels.ProductTypeDigitalDownload:
+		// Entitlement is granted via badge mapping on the offer; no per-product
+		// enrollment row is required to unlock downloads.
+		c.JSON(http.StatusOK, gin.H{"status": "ok", "skipped": "digital_download"})
+	default:
+		enrollCourseProduct(c, tenantID, contactID, &product, req.EnrollmentBadge)
+	}
+}
+
+// enrollCoachingProduct provisions a CoachingEnrollment so a buyer of a
+// coaching offer immediately sees the program in their library and can book
+// sessions. SessionsTotal is derived from the program's SessionTemplates so a
+// 3-session program yields a 3-session enrollment. Idempotent on
+// (tenant_id, contact_id, product_id).
+func enrollCoachingProduct(c *gin.Context, tenantID, contactID bson.ObjectId, product *pkgmodels.Product) {
 	filter := bson.M{
 		"tenant_id":  tenantID,
 		"contact_id": contactID,
-		"product_id": productID,
+		"product_id": product.Id,
 	}
-	var existing pkgmodels.CourseEnrollment
-	findErr := db.GetCollection(pkgmodels.CourseEnrollmentCollection).Find(filter).One(&existing)
-	if findErr == nil {
+	var existing pkgmodels.CoachingEnrollment
+	if err := db.GetCollection(pkgmodels.CoachingEnrollmentCollection).Find(filter).One(&existing); err == nil {
 		c.JSON(http.StatusOK, gin.H{"status": "ok", "enrollment_id": existing.Id.Hex(), "created": false})
 		return
 	}
+	sessionsTotal := 0
+	if product.Coaching != nil {
+		sessionsTotal = len(product.Coaching.SessionTemplates)
+	}
+	enrollment := pkgmodels.NewCoachingEnrollment(tenantID, contactID, product.Id, product.PublicId, sessionsTotal)
+	if err := db.GetCollection(pkgmodels.CoachingEnrollmentCollection).Insert(enrollment); err != nil {
+		log.Printf("[LMS] Coaching enroll error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enroll"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "enrollment_id": enrollment.Id.Hex(), "created": true, "sessions_total": sessionsTotal})
+}
 
-	enrollment := pkgmodels.NewCourseEnrollment(tenantID, contactID, productID, product.PublicId, req.EnrollmentBadge)
+// enrollCourseProduct upserts a CourseEnrollment for course-shaped products.
+// Idempotent on (tenant_id, contact_id, product_id) so retried Stripe webhook
+// deliveries don't duplicate enrollments.
+func enrollCourseProduct(c *gin.Context, tenantID, contactID bson.ObjectId, product *pkgmodels.Product, enrollmentBadge string) {
+	filter := bson.M{
+		"tenant_id":  tenantID,
+		"contact_id": contactID,
+		"product_id": product.Id,
+	}
+	var existing pkgmodels.CourseEnrollment
+	if err := db.GetCollection(pkgmodels.CourseEnrollmentCollection).Find(filter).One(&existing); err == nil {
+		c.JSON(http.StatusOK, gin.H{"status": "ok", "enrollment_id": existing.Id.Hex(), "created": false})
+		return
+	}
+	enrollment := pkgmodels.NewCourseEnrollment(tenantID, contactID, product.Id, product.PublicId, enrollmentBadge)
 	if err := db.GetCollection(pkgmodels.CourseEnrollmentCollection).Insert(enrollment); err != nil {
 		log.Printf("[LMS] Internal enroll error: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enroll"})
 		return
 	}
-
 	c.JSON(http.StatusOK, gin.H{"status": "ok", "enrollment_id": enrollment.Id.Hex(), "created": true})
+}
+
+// enrollServiceProduct provisions the ServiceEnrollment + N pending
+// ServiceInstance rows that the tenant fulfills asynchronously. Each instance
+// mirrors one ServiceInstanceTemplate on the product and starts in pending
+// status. Idempotent on (tenant_id, contact_id, product_id).
+func enrollServiceProduct(c *gin.Context, tenantID, contactID bson.ObjectId, product *pkgmodels.Product) {
+	cfg := product.Service
+	if cfg == nil {
+		cfg = &pkgmodels.ServiceConfig{}
+	}
+	templates := cfg.InstanceTemplates
+
+	filter := bson.M{
+		"tenant_id":  tenantID,
+		"contact_id": contactID,
+		"product_id": product.Id,
+	}
+	var existing pkgmodels.ServiceEnrollment
+	if err := db.GetCollection(pkgmodels.ServiceEnrollmentCollection).Find(filter).One(&existing); err == nil {
+		c.JSON(http.StatusOK, gin.H{"status": "ok", "enrollment_id": existing.Id.Hex(), "created": false})
+		return
+	}
+
+	enrollment := pkgmodels.NewServiceEnrollment(tenantID, contactID, product.Id, product.PublicId, len(templates))
+	if err := db.GetCollection(pkgmodels.ServiceEnrollmentCollection).Insert(enrollment); err != nil {
+		log.Printf("[LMS] Service enroll error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enroll"})
+		return
+	}
+
+	for i, t := range templates {
+		title := t.Title
+		if title == "" {
+			title = fmt.Sprintf("Session %d", i+1)
+		}
+		instance := pkgmodels.NewServiceInstance(tenantID, product.Id, enrollment.Id, contactID, t.Id, t.Order, title)
+		if err := db.GetCollection(pkgmodels.ServiceInstanceCollection).Insert(instance); err != nil {
+			log.Printf("[LMS] Service instance insert error: %v", err)
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "enrollment_id": enrollment.Id.Hex(), "created": true, "instances": len(templates)})
 }
