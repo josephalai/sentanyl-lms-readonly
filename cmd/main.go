@@ -40,7 +40,7 @@ func main() {
 	// Protected LMS routes (require JWT).
 	// Routes register under /api/lms/* matching the Caddy gateway prefix.
 	lmsAPI := r.Group("/api")
-	lmsAPI.Use(auth.RequireTenantAuth())
+	lmsAPI.Use(auth.RequireTenantAuth(), auth.RequirePlatformSubscription())
 	routes.RegisterLMSRoutes(lmsAPI)
 
 	// Internal routes (no auth — internal network only).
