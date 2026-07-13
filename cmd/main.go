@@ -45,8 +45,10 @@ func main() {
 	lmsAPI.Use(auth.RequireTenantAuth(), auth.RequirePlatformSubscription())
 	routes.RegisterLMSRoutes(lmsAPI)
 
-	// Internal routes (no auth — internal network only).
+	// Internal routes: service-to-service only, authenticated by a signed
+	// service token (API-001 / DEL-006). Network position is not identity.
 	internal := r.Group("/internal")
+	internal.Use(auth.RequireServiceAuth())
 	routes.RegisterInternalRoutes(internal)
 
 	log.Printf("lms-service: listening on :%s", port)
