@@ -37,6 +37,8 @@ func main() {
 	r := gin.Default()
 	r.Use(httputil.CORSMiddleware())
 
+	r.GET("/health", httputil.HealthHandler("lms-service"))
+
 	// Protected LMS routes (require JWT).
 	// Routes register under /api/lms/* matching the Caddy gateway prefix.
 	lmsAPI := r.Group("/api")
