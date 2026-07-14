@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/josephalai/sentanyl/lms-service/routes"
+	"github.com/josephalai/sentanyl/pkg/audit"
 	"github.com/josephalai/sentanyl/pkg/auth"
 	"github.com/josephalai/sentanyl/pkg/config"
 	"github.com/josephalai/sentanyl/pkg/db"
@@ -36,7 +37,9 @@ func main() {
 
 	// Set up Gin router.
 	r := gin.Default()
+	audit.Init("lms-service")
 	r.Use(httputil.CORSMiddleware())
+	r.Use(audit.Middleware())
 
 	r.GET("/health", httputil.HealthHandler("lms-service"))
 
