@@ -8,12 +8,26 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	mgo "gopkg.in/mgo.v2"
 	"gopkg.in/mgo.v2/bson"
 
 	"github.com/josephalai/sentanyl/pkg/db"
 	"github.com/josephalai/sentanyl/pkg/i18n"
 	pkgmodels "github.com/josephalai/sentanyl/pkg/models"
 )
+
+// EnsureEnrollmentIndexes enforces the DEL-007 idempotency invariant: one
+// course enrollment per purchased line item, races settled at insert.
+func EnsureEnrollmentIndexes() {
+	if err := db.GetCollection(pkgmodels.CourseEnrollmentCollection).EnsureIndex(mgo.Index{
+		Key:        []string{"purchase_item_id"},
+		Unique:     true,
+		Sparse:     true,
+		Background: true,
+	}); err != nil {
+		log.Printf("lms: course enrollment purchase-item index: %v", err)
+	}
+}
 
 // RegisterInternalRoutes registers internal-only routes (no auth).
 func RegisterInternalRoutes(internal *gin.RouterGroup) {
@@ -147,6 +161,11 @@ type internalEnrollRequest struct {
 	ContactID       string `json:"contact_id" binding:"required"`
 	ProductID       string `json:"product_id" binding:"required"`
 	EnrollmentBadge string `json:"enrollment_badge,omitempty"`
+	// OfferID/PurchaseItemID carry the commercial provenance (DEL-007/008):
+	// the purchase item is the idempotency key so repurchases enroll again.
+	OfferID        string `json:"offer_id,omitempty"`
+	PurchaseItemID string `json:"purchase_item_id,omitempty"`
+	Source         string `json:"source,omitempty"`
 }
 
 func HandleInternalEnroll(c *gin.Context) {
@@ -189,7 +208,14 @@ func HandleInternalEnroll(c *gin.Context) {
 		// enrollment row is required to unlock downloads.
 		c.JSON(http.StatusOK, gin.H{"status": "ok", "skipped": "digital_download"})
 	default:
-		enrollCourseProduct(c, tenantID, contactID, &product, req.EnrollmentBadge)
+		var offerID, purchaseItemID bson.ObjectId
+		if bson.IsObjectIdHex(req.OfferID) {
+			offerID = bson.ObjectIdHex(req.OfferID)
+		}
+		if bson.IsObjectIdHex(req.PurchaseItemID) {
+			purchaseItemID = bson.ObjectIdHex(req.PurchaseItemID)
+		}
+		enrollCourseProduct(c, tenantID, contactID, &product, req.EnrollmentBadge, offerID, purchaseItemID, req.Source)
 	}
 }
 
@@ -223,21 +249,44 @@ func enrollCoachingProduct(c *gin.Context, tenantID, contactID bson.ObjectId, pr
 }
 
 // enrollCourseProduct upserts a CourseEnrollment for course-shaped products.
-// Idempotent on (tenant_id, contact_id, product_id) so retried Stripe webhook
-// deliveries don't duplicate enrollments.
-func enrollCourseProduct(c *gin.Context, tenantID, contactID bson.ObjectId, product *pkgmodels.Product, enrollmentBadge string) {
-	filter := bson.M{
-		"tenant_id":  tenantID,
-		"contact_id": contactID,
-		"product_id": product.Id,
+//
+// DEL-007: when the caller supplies a purchase_item_id, idempotency is keyed
+// on it — a webhook retry reuses the enrollment while a genuine repurchase
+// (new item) enrolls again. Legacy callers without one keep the old
+// (tenant, contact, product) collapse. DEL-008: the offer/item/source
+// provenance is stored on the enrollment row.
+func enrollCourseProduct(c *gin.Context, tenantID, contactID bson.ObjectId, product *pkgmodels.Product, enrollmentBadge string, offerID, purchaseItemID bson.ObjectId, source string) {
+	col := db.GetCollection(pkgmodels.CourseEnrollmentCollection)
+	var filter bson.M
+	if purchaseItemID.Valid() {
+		filter = bson.M{"purchase_item_id": purchaseItemID}
+	} else {
+		filter = bson.M{
+			"tenant_id":  tenantID,
+			"contact_id": contactID,
+			"product_id": product.Id,
+		}
 	}
 	var existing pkgmodels.CourseEnrollment
-	if err := db.GetCollection(pkgmodels.CourseEnrollmentCollection).Find(filter).One(&existing); err == nil {
+	if err := col.Find(filter).One(&existing); err == nil {
 		c.JSON(http.StatusOK, gin.H{"status": "ok", "enrollment_id": existing.Id.Hex(), "created": false})
 		return
 	}
 	enrollment := pkgmodels.NewCourseEnrollment(tenantID, contactID, product.Id, product.PublicId, enrollmentBadge)
-	if err := db.GetCollection(pkgmodels.CourseEnrollmentCollection).Insert(enrollment); err != nil {
+	enrollment.OfferID = offerID
+	enrollment.PurchaseItemID = purchaseItemID
+	enrollment.Source = source
+	if enrollment.Source == "" && purchaseItemID.Valid() {
+		enrollment.Source = "purchase"
+	}
+	if err := col.Insert(enrollment); err != nil {
+		if mgo.IsDup(err) {
+			// Concurrent replay of the same purchase item — treat as reuse.
+			if ferr := col.Find(filter).One(&existing); ferr == nil {
+				c.JSON(http.StatusOK, gin.H{"status": "ok", "enrollment_id": existing.Id.Hex(), "created": false})
+				return
+			}
+		}
 		log.Printf("[LMS] Internal enroll error: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enroll"})
 		return

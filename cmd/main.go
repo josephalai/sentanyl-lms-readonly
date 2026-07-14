@@ -32,6 +32,7 @@ func main() {
 	db.MongoDefaultCollectionName = "products"
 	db.UsingLocalMongo = true
 	db.InitMongoConnection()
+	routes.EnsureEnrollmentIndexes()
 
 	// Set up Gin router.
 	r := gin.Default()
