@@ -324,6 +324,7 @@ func handleGetCourse(c *gin.Context) {
 	}
 
 	resp := gin.H{
+		"id":                   product.Id.Hex(),
 		"public_id":            product.PublicId,
 		"title":                product.Name,
 		"description":          product.Description,
@@ -431,6 +432,10 @@ func handleUpdateCourse(c *gin.Context) {
 		update["thumbnail_url"] = *req.Thumbnail
 	}
 	if req.Status != nil {
+		if !pkgmodels.ValidProductStatusTransition(product.Status, *req.Status) {
+			c.JSON(http.StatusConflict, gin.H{"error": "invalid course status transition from " + product.Status + " to " + *req.Status})
+			return
+		}
 		update["status"] = *req.Status
 	}
 	if req.CertificateEnabled != nil {
@@ -510,7 +515,7 @@ func handleUpdateCourse(c *gin.Context) {
 		update["total_lessons"] = totalLessons
 	}
 
-	if req.Status != nil && *req.Status == "published" {
+	if req.Status != nil && *req.Status == pkgmodels.ProductStatusActive {
 		titleToCheck := product.Name
 		if req.Title != nil {
 			titleToCheck = *req.Title
