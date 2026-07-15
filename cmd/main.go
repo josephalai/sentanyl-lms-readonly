@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/josephalai/sentanyl/lms-service/routes"
+	"github.com/josephalai/sentanyl/pkg/aigov"
 	"github.com/josephalai/sentanyl/pkg/audit"
 	"github.com/josephalai/sentanyl/pkg/auth"
 	"github.com/josephalai/sentanyl/pkg/config"
@@ -34,6 +35,7 @@ func main() {
 	db.UsingLocalMongo = true
 	db.InitMongoConnection()
 	routes.EnsureEnrollmentIndexes()
+	aigov.EnsureOperationIndexes()
 
 	// Set up Gin router.
 	r := gin.Default()

@@ -97,6 +97,27 @@ func (s *GenerationService) GenerateOutline(
 	extraContext string,
 	referenceIds []string,
 ) (*pkgmodels.GenerationJob, *CourseOutline, error) {
+	return s.GenerateOutlineContext(context.Background(), tenantID, productPublicId, prompt, audience, outcome, tone, moduleCount, quizzesEnabled, certEnabled, defaultMedia, extraContext, referenceIds)
+}
+
+// GenerateOutlineContext is the cancellable form used by HTTP generation
+// operations. GenerateOutline remains as a compatibility wrapper for script
+// callers and tests that do not supply a request context.
+func (s *GenerationService) GenerateOutlineContext(
+	ctx context.Context,
+	tenantID bson.ObjectId,
+	productPublicId string,
+	prompt string,
+	audience string,
+	outcome string,
+	tone string,
+	moduleCount int,
+	quizzesEnabled bool,
+	certEnabled bool,
+	defaultMedia string,
+	extraContext string,
+	referenceIds []string,
+) (*pkgmodels.GenerationJob, *CourseOutline, error) {
 	job := pkgmodels.NewGenerationJob(tenantID, "", "create")
 	job.ProductPublicId = productPublicId
 	job.Prompt = prompt
@@ -131,7 +152,7 @@ func (s *GenerationService) GenerateOutline(
 	// reference material as context to teach from — not as lesson content.
 	var outline CourseOutline
 	if p := s.provider(); p != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 		defer cancel()
 
 		llmOut, err := p.GenerateOutline(ctx, llm.OutlineRequest{
@@ -147,6 +168,9 @@ func (s *GenerationService) GenerateOutline(
 			ReferenceText:  refText,
 		})
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil, nil, ctx.Err()
+			}
 			log.Printf("[LMS] LLM outline failed, falling back to deterministic stub: %v", err)
 			outline = buildDeterministicOutline(prompt, audience, outcome, moduleCount, quizzesEnabled, defaultMedia, refText)
 		} else {
@@ -217,6 +241,21 @@ func (s *GenerationService) MaterializeCourse(
 	quizzesEnabled bool,
 	certEnabled bool,
 ) (*pkgmodels.GenerationJob, error) {
+	return s.MaterializeCourseContext(context.Background(), tenantID, productPublicId, jobPublicId, outline, defaultMedia, quizzesEnabled, certEnabled)
+}
+
+// MaterializeCourseContext propagates cancellation through every parallel
+// lesson and quiz provider call.
+func (s *GenerationService) MaterializeCourseContext(
+	ctx context.Context,
+	tenantID bson.ObjectId,
+	productPublicId string,
+	jobPublicId string,
+	outline CourseOutline,
+	defaultMedia string,
+	quizzesEnabled bool,
+	certEnabled bool,
+) (*pkgmodels.GenerationJob, error) {
 	product, err := queries.GetCourseProductByPublicId(tenantID, productPublicId)
 	if err != nil {
 		return nil, fmt.Errorf("course not found: %w", err)
@@ -261,13 +300,19 @@ func (s *GenerationService) MaterializeCourse(
 		pwg.Add(2)
 		go func() {
 			defer pwg.Done()
-			lessonBodies = s.generateLessonBodies(outline, audience, tone, refText)
+			lessonBodies = s.generateLessonBodiesContext(ctx, outline, audience, tone, refText)
 		}()
 		go func() {
 			defer pwg.Done()
-			quizzes = s.generateQuizzes(outline, audience, tone, refText, quizzesEnabled)
+			quizzes = s.generateQuizzesContext(ctx, outline, audience, tone, refText, quizzesEnabled)
 		}()
 		pwg.Wait()
+	}
+	if err := ctx.Err(); err != nil {
+		if jobPublicId != "" {
+			queries.UpdateGenerationJob(tenantID, jobPublicId, bson.M{"status": string(pkgmodels.GenStatusFailed), "error_message": err.Error()})
+		}
+		return nil, err
 	}
 
 	// Build course modules from outline
@@ -395,6 +440,10 @@ func lessonKey(moduleIdx, lessonIdx int) string {
 // empty map when no provider is configured or when every call failed — the
 // caller is responsible for applying a fallback per lesson.
 func (s *GenerationService) generateLessonBodies(outline CourseOutline, audience, tone, refText string) map[string]string {
+	return s.generateLessonBodiesContext(context.Background(), outline, audience, tone, refText)
+}
+
+func (s *GenerationService) generateLessonBodiesContext(parent context.Context, outline CourseOutline, audience, tone, refText string) map[string]string {
 	bodies := map[string]string{}
 	p := s.provider()
 	if p == nil {
@@ -432,7 +481,7 @@ func (s *GenerationService) generateLessonBodies(outline CourseOutline, audience
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+			ctx, cancel := context.WithTimeout(parent, 90*time.Second)
 			defer cancel()
 
 			md, err := p.GenerateLessonContent(ctx, llm.LessonContentRequest{
@@ -467,6 +516,15 @@ func (s *GenerationService) generateLessonBodies(outline CourseOutline, audience
 // provider is configured or when quizzes are globally disabled — the caller
 // is responsible for applying a per-module fallback.
 func (s *GenerationService) generateQuizzes(
+	outline CourseOutline,
+	audience, tone, refText string,
+	quizzesEnabled bool,
+) map[int]*llm.QuizResponse {
+	return s.generateQuizzesContext(context.Background(), outline, audience, tone, refText, quizzesEnabled)
+}
+
+func (s *GenerationService) generateQuizzesContext(
+	parent context.Context,
 	outline CourseOutline,
 	audience, tone, refText string,
 	quizzesEnabled bool,
@@ -507,7 +565,7 @@ func (s *GenerationService) generateQuizzes(
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+			ctx, cancel := context.WithTimeout(parent, 90*time.Second)
 			defer cancel()
 
 			titles := make([]string, 0, len(t.module.Lessons))

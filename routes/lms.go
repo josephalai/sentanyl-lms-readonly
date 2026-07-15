@@ -1,6 +1,7 @@
 package routes
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/josephalai/sentanyl/lms-service/queries"
 	"github.com/josephalai/sentanyl/lms-service/services"
+	"github.com/josephalai/sentanyl/pkg/aigov"
 	"github.com/josephalai/sentanyl/pkg/auth"
 	"github.com/josephalai/sentanyl/pkg/db"
 	pkgmodels "github.com/josephalai/sentanyl/pkg/models"
@@ -72,6 +74,25 @@ func RegisterLMSRoutes(tenant *gin.RouterGroup) {
 		lms.GET("/courses/:courseId/certificate-template", handleGetCertificateTemplate)
 		lms.PUT("/courses/:courseId/certificate-template", handleUpdateCertificateTemplate)
 	}
+}
+
+func admitLMSAI(c *gin.Context, tenantID bson.ObjectId, surface string, inputChars, outputTokens int64) (*pkgmodels.AIOperation, context.Context, context.CancelFunc, bool) {
+	op, err := aigov.Begin(tenantID, surface, aigov.Estimate{InputCharacters: inputChars, OutputTokens: outputTokens}, time.Now().UTC())
+	if err != nil {
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": err.Error(), "code": "ai_admission_failed"})
+		return nil, nil, nil, false
+	}
+	ctx, cancel := aigov.Context(c.Request.Context(), op)
+	c.Header("X-AI-Operation-Id", op.PublicID)
+	return op, ctx, cancel, true
+}
+
+func settleLMSAI(op *pkgmodels.AIOperation, err error) {
+	if err != nil {
+		_ = aigov.Fail(op, err, time.Now().UTC())
+		return
+	}
+	_ = aigov.Complete(op, aigov.Usage{}, time.Now().UTC())
 }
 
 // ---------- Course Handlers ----------
@@ -145,46 +166,46 @@ func handleCreateCourse(c *gin.Context) {
 	}
 
 	var req struct {
-		Title              string     `json:"title" binding:"required"`
-		Description        string     `json:"description"`
-		InstructorName     string     `json:"instructor_name"`
-		Thumbnail          string     `json:"thumbnail"`
-		CertificateEnabled *bool      `json:"certificate_enabled"`
-		CertificateTemplate string    `json:"certificate_template"`
-		SequentialGating   bool       `json:"sequential_gating"`
-		RequireQuizPass    bool       `json:"require_quiz_pass"`
-		DripAnchor         string     `json:"drip_anchor"`
-		DripAnchorDate     *time.Time `json:"drip_anchor_date"`
-		Modules        []struct {
+		Title               string     `json:"title" binding:"required"`
+		Description         string     `json:"description"`
+		InstructorName      string     `json:"instructor_name"`
+		Thumbnail           string     `json:"thumbnail"`
+		CertificateEnabled  *bool      `json:"certificate_enabled"`
+		CertificateTemplate string     `json:"certificate_template"`
+		SequentialGating    bool       `json:"sequential_gating"`
+		RequireQuizPass     bool       `json:"require_quiz_pass"`
+		DripAnchor          string     `json:"drip_anchor"`
+		DripAnchorDate      *time.Time `json:"drip_anchor_date"`
+		Modules             []struct {
 			Slug     string `json:"slug" binding:"required"`
 			Title    string `json:"title" binding:"required"`
 			Order    int    `json:"order"`
 			QuizSlug string `json:"quiz_slug"`
 			Lessons  []struct {
-				Slug                 string                 `json:"slug" binding:"required"`
-				Title                string                 `json:"title" binding:"required"`
-				Order                int                    `json:"order"`
-				VideoURL             string                 `json:"video_url"`
-				MediaPublicId        string                 `json:"media_public_id"`
-				Duration             string                 `json:"duration"`
-				DurationSec          int64                  `json:"duration_sec"`
-				ContentHTML          string                 `json:"content_html"`
-				ContentGenStatus     string                 `json:"content_gen_status"`
-				ContentGenConfig     map[string]interface{} `json:"content_gen_config"`
-				IsFree               bool                   `json:"is_free"`
-				IsDraft              bool                   `json:"is_draft"`
-				DripDays             int                    `json:"drip_days"`
-				DripHours            int                    `json:"drip_hours"`
-				DripMinutes          int                    `json:"drip_minutes"`
-				LiveStartsAt         *time.Time             `json:"live_starts_at,omitempty"`
-				LiveEndsAt           *time.Time             `json:"live_ends_at,omitempty"`
-				BadgeRules           []*pkgmodels.MediaBadgeRule `json:"badge_rules,omitempty"`
+				Slug                 string                                  `json:"slug" binding:"required"`
+				Title                string                                  `json:"title" binding:"required"`
+				Order                int                                     `json:"order"`
+				VideoURL             string                                  `json:"video_url"`
+				MediaPublicId        string                                  `json:"media_public_id"`
+				Duration             string                                  `json:"duration"`
+				DurationSec          int64                                   `json:"duration_sec"`
+				ContentHTML          string                                  `json:"content_html"`
+				ContentGenStatus     string                                  `json:"content_gen_status"`
+				ContentGenConfig     map[string]interface{}                  `json:"content_gen_config"`
+				IsFree               bool                                    `json:"is_free"`
+				IsDraft              bool                                    `json:"is_draft"`
+				DripDays             int                                     `json:"drip_days"`
+				DripHours            int                                     `json:"drip_hours"`
+				DripMinutes          int                                     `json:"drip_minutes"`
+				LiveStartsAt         *time.Time                              `json:"live_starts_at,omitempty"`
+				LiveEndsAt           *time.Time                              `json:"live_ends_at,omitempty"`
+				BadgeRules           []*pkgmodels.MediaBadgeRule             `json:"badge_rules,omitempty"`
 				Translations         map[string]*pkgmodels.LessonTranslation `json:"translations,omitempty"`
-				VideoMode            string                 `json:"video_mode"`
-				VideoStubScript      string                 `json:"video_stub_script"`
-				VideoStubDescription string                 `json:"video_stub_description"`
-				VideoUploadPending   bool                   `json:"video_upload_pending"`
-				ContentMarkdown      string                 `json:"content_markdown"`
+				VideoMode            string                                  `json:"video_mode"`
+				VideoStubScript      string                                  `json:"video_stub_script"`
+				VideoStubDescription string                                  `json:"video_stub_description"`
+				VideoUploadPending   bool                                    `json:"video_upload_pending"`
+				ContentMarkdown      string                                  `json:"content_markdown"`
 			} `json:"lessons"`
 		} `json:"modules"`
 	}
@@ -344,49 +365,49 @@ func handleUpdateCourse(c *gin.Context) {
 	}
 
 	var req struct {
-		Title              *string    `json:"title,omitempty"`
-		Description        *string    `json:"description,omitempty"`
-		InstructorName     *string    `json:"instructor_name,omitempty"`
-		Thumbnail          *string    `json:"thumbnail,omitempty"`
-		Status             *string    `json:"status,omitempty"`
-		CertificateEnabled *bool      `json:"certificate_enabled,omitempty"`
-		CertificateTemplate *string   `json:"certificate_template,omitempty"`
-		SequentialGating   *bool      `json:"sequential_gating,omitempty"`
-		RequireQuizPass    *bool      `json:"require_quiz_pass,omitempty"`
-		DripAnchor         *string    `json:"drip_anchor,omitempty"`
-		DripAnchorDate     *time.Time `json:"drip_anchor_date,omitempty"`
-		Translations       map[string]*pkgmodels.ProductTranslation `json:"translations,omitempty"`
-		Modules        []struct {
-			Slug         string `json:"slug"`
-			Title        string `json:"title"`
-			Order        int    `json:"order"`
-			QuizSlug     string `json:"quiz_slug"`
+		Title               *string                                  `json:"title,omitempty"`
+		Description         *string                                  `json:"description,omitempty"`
+		InstructorName      *string                                  `json:"instructor_name,omitempty"`
+		Thumbnail           *string                                  `json:"thumbnail,omitempty"`
+		Status              *string                                  `json:"status,omitempty"`
+		CertificateEnabled  *bool                                    `json:"certificate_enabled,omitempty"`
+		CertificateTemplate *string                                  `json:"certificate_template,omitempty"`
+		SequentialGating    *bool                                    `json:"sequential_gating,omitempty"`
+		RequireQuizPass     *bool                                    `json:"require_quiz_pass,omitempty"`
+		DripAnchor          *string                                  `json:"drip_anchor,omitempty"`
+		DripAnchorDate      *time.Time                               `json:"drip_anchor_date,omitempty"`
+		Translations        map[string]*pkgmodels.ProductTranslation `json:"translations,omitempty"`
+		Modules             []struct {
+			Slug         string                                  `json:"slug"`
+			Title        string                                  `json:"title"`
+			Order        int                                     `json:"order"`
+			QuizSlug     string                                  `json:"quiz_slug"`
 			Translations map[string]*pkgmodels.ModuleTranslation `json:"translations,omitempty"`
-			Lessons  []struct {
-				Slug                 string                 `json:"slug"`
-				Title                string                 `json:"title"`
-				Order                int                    `json:"order"`
-				VideoURL             string                 `json:"video_url"`
-				MediaPublicId        string                 `json:"media_public_id"`
-				Duration             string                 `json:"duration"`
-				DurationSec          int64                  `json:"duration_sec"`
-				ContentHTML          string                 `json:"content_html"`
-				ContentGenStatus     string                 `json:"content_gen_status"`
-				ContentGenConfig     map[string]interface{} `json:"content_gen_config"`
-				IsFree               bool                   `json:"is_free"`
-				IsDraft              bool                   `json:"is_draft"`
-				DripDays             int                    `json:"drip_days"`
-				DripHours            int                    `json:"drip_hours"`
-				DripMinutes          int                    `json:"drip_minutes"`
-				LiveStartsAt         *time.Time             `json:"live_starts_at,omitempty"`
-				LiveEndsAt           *time.Time             `json:"live_ends_at,omitempty"`
-				BadgeRules           []*pkgmodels.MediaBadgeRule `json:"badge_rules,omitempty"`
+			Lessons      []struct {
+				Slug                 string                                  `json:"slug"`
+				Title                string                                  `json:"title"`
+				Order                int                                     `json:"order"`
+				VideoURL             string                                  `json:"video_url"`
+				MediaPublicId        string                                  `json:"media_public_id"`
+				Duration             string                                  `json:"duration"`
+				DurationSec          int64                                   `json:"duration_sec"`
+				ContentHTML          string                                  `json:"content_html"`
+				ContentGenStatus     string                                  `json:"content_gen_status"`
+				ContentGenConfig     map[string]interface{}                  `json:"content_gen_config"`
+				IsFree               bool                                    `json:"is_free"`
+				IsDraft              bool                                    `json:"is_draft"`
+				DripDays             int                                     `json:"drip_days"`
+				DripHours            int                                     `json:"drip_hours"`
+				DripMinutes          int                                     `json:"drip_minutes"`
+				LiveStartsAt         *time.Time                              `json:"live_starts_at,omitempty"`
+				LiveEndsAt           *time.Time                              `json:"live_ends_at,omitempty"`
+				BadgeRules           []*pkgmodels.MediaBadgeRule             `json:"badge_rules,omitempty"`
 				Translations         map[string]*pkgmodels.LessonTranslation `json:"translations,omitempty"`
-				VideoMode            string                 `json:"video_mode"`
-				VideoStubScript      string                 `json:"video_stub_script"`
-				VideoStubDescription string                 `json:"video_stub_description"`
-				VideoUploadPending   bool                   `json:"video_upload_pending"`
-				ContentMarkdown      string                 `json:"content_markdown"`
+				VideoMode            string                                  `json:"video_mode"`
+				VideoStubScript      string                                  `json:"video_stub_script"`
+				VideoStubDescription string                                  `json:"video_stub_description"`
+				VideoUploadPending   bool                                    `json:"video_upload_pending"`
+				ContentMarkdown      string                                  `json:"content_markdown"`
 			} `json:"lessons"`
 		} `json:"modules,omitempty"`
 	}
@@ -594,7 +615,7 @@ func handleListEnrollments(c *gin.Context) {
 		PublicId        string `json:"public_id"`
 		ContactID       string `json:"contact_id"`
 		ProductPublicId string `json:"product_public_id"`
-		CourseTitle      string `json:"course_title"`
+		CourseTitle     string `json:"course_title"`
 		Status          string `json:"status"`
 		OverallPercent  int    `json:"overall_percent"`
 		EnrolledAt      string `json:"enrolled_at"`
@@ -1282,10 +1303,17 @@ func handleGenerateOutline(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	estimatedInput := int64(len(req.Prompt) + len(req.Audience) + len(req.Outcome) + len(req.Tone) + len(req.ExtraContext))
+	op, opCtx, cancel, admitted := admitLMSAI(c, tenantID, "lms.outline", estimatedInput, 4096)
+	if !admitted {
+		return
+	}
+	defer cancel()
 
 	// Delegate to shared GenerationService
 	genSvc := services.NewGenerationService()
-	job, outline, err := genSvc.GenerateOutline(
+	job, outline, err := genSvc.GenerateOutlineContext(
+		opCtx,
 		tenantID,
 		courseId,
 		req.Prompt,
@@ -1299,6 +1327,7 @@ func handleGenerateOutline(c *gin.Context) {
 		req.ExtraContext,
 		req.ReferenceIds,
 	)
+	settleLMSAI(op, err)
 	if err != nil {
 		log.Printf("[LMS] Error generating outline: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate outline"})
@@ -1377,10 +1406,24 @@ func handleGenerateFullCourse(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid outline JSON: " + err.Error()})
 		return
 	}
+	lessonCount := 0
+	for _, module := range outline.Modules {
+		lessonCount += len(module.Lessons)
+	}
+	estimatedOutput := int64(lessonCount*1500 + len(outline.Modules)*1000)
+	if estimatedOutput < 4096 {
+		estimatedOutput = 4096
+	}
+	op, opCtx, cancel, admitted := admitLMSAI(c, tenantID, "lms.course.materialize", int64(len(finalOutlineJSON)), estimatedOutput)
+	if !admitted {
+		return
+	}
+	defer cancel()
 
 	// Delegate to shared GenerationService
 	genSvc := services.NewGenerationService()
-	job, err := genSvc.MaterializeCourse(
+	job, err := genSvc.MaterializeCourseContext(
+		opCtx,
 		tenantID,
 		courseId,
 		req.JobId,
@@ -1389,6 +1432,7 @@ func handleGenerateFullCourse(c *gin.Context) {
 		finalQuizzesEnabled,
 		finalCertEnabled,
 	)
+	settleLMSAI(op, err)
 	if err != nil {
 		log.Printf("[LMS] Error materializing course: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate full course: " + err.Error()})
