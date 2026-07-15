@@ -39,6 +39,7 @@ func main() {
 
 	// Set up Gin router.
 	r := gin.Default()
+	r.Use(httputil.RequestID())
 	audit.Init("lms-service")
 	r.Use(httputil.CORSMiddleware())
 	r.Use(audit.Middleware())
